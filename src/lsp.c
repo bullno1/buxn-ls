@@ -11,9 +11,38 @@ typedef enum {
 	BIO_LSP_BAD_HEADER,
 	BIO_LSP_BAD_JSON,
 	BIO_LSP_BAD_JSONRPC,
+	BIO_LSP_CONNECTIN_CLOSED,
 } bio_lsp_error_t;
 
 static const bio_tag_t BIO_LSP_ERROR = BIO_TAG_INIT("bio.lsp.error");
+
+static const char*
+bio_lsp_format_error(int error) {
+	switch ((bio_lsp_error_t)error) {
+		case BIO_LSP_BAD_HEADER:
+			return "Bad header";
+		case BIO_LSP_BAD_JSON:
+			return "Bad JSON";
+		case BIO_LSP_BAD_JSONRPC:
+			return "Bad JSON-RPC message";
+		case BIO_LSP_CONNECTIN_CLOSED:
+			return "Connection closed";
+	}
+	return "Unknown error";
+}
+
+static void
+bio_lsp_set_error(bio_error_t* error, int code, const char* file, int line) {
+	if (error != NULL) {
+		error->tag = &BIO_LSP_ERROR;
+		error->code = code;
+		error->strerror = bio_lsp_format_error;
+		error->file = file;
+		error->line = line;
+	}
+}
+
+#define bio_lsp_set_error(error, code) bio_lsp_set_error(error, code, __FILE__, __LINE__)
 
 static inline size_t
 bio_lsp_recv(bio_lsp_conn_t* conn, void* buf, size_t size, bio_error_t* error) {
@@ -61,15 +90,6 @@ bio_lsp_recv_line(bio_lsp_msg_reader_t* reader, bio_error_t* error) {
 	}
 
 	while (true) {
-		size_t bytes_recv = bio_lsp_recv(
-			reader->conn,
-			reader->line_buf + reader->buf_size,
-			sizeof(reader->line_buf) - reader->buf_size,
-			error
-		);
-		if (bytes_recv == 0) { return NULL; }
-		reader->buf_size += bytes_recv;
-
 		for (int i = 0; i < (int)reader->buf_size - 1; ++i) {
 			if (
 				reader->line_buf[i] == '\r'
@@ -80,6 +100,20 @@ bio_lsp_recv_line(bio_lsp_msg_reader_t* reader, bio_error_t* error) {
 				return reader->line_buf;
 			}
 		}
+
+		size_t bytes_recv = bio_lsp_recv(
+			reader->conn,
+			reader->line_buf + reader->buf_size,
+			sizeof(reader->line_buf) - reader->buf_size,
+			error
+		);
+		if (bytes_recv == 0) {
+			if (!bio_has_error(error)) {
+				bio_lsp_set_error(error, BIO_LSP_CONNECTIN_CLOSED);
+			}
+			return NULL;
+		}
+		reader->buf_size += bytes_recv;
 	}
 }
 
@@ -106,32 +140,6 @@ bio_lsp_file_conn_send(bio_lsp_conn_t* conn, const void* buf, size_t size, bio_e
 	bio_lsp_file_conn_t* file_conn = BIO_CONTAINER_OF(conn, bio_lsp_file_conn_t, conn);
 	return bio_fwrite(file_conn->out, buf, size, error);
 }
-
-static const char*
-bio_lsp_format_error(int error) {
-	switch ((bio_lsp_error_t)error) {
-		case BIO_LSP_BAD_HEADER:
-			return "Bad header";
-		case BIO_LSP_BAD_JSON:
-			return "Bad JSON";
-		case BIO_LSP_BAD_JSONRPC:
-			return "Bad JSON-RPC message";
-	}
-	return "Unknown error";
-}
-
-static void
-bio_lsp_set_error(bio_error_t* error, int code, const char* file, int line) {
-	if (error != NULL) {
-		error->tag = &BIO_LSP_ERROR;
-		error->code = code;
-		error->strerror = bio_lsp_format_error;
-		error->file = file;
-		error->line = line;
-	}
-}
-
-#define bio_lsp_set_error(error, code) bio_lsp_set_error(error, code, __FILE__, __LINE__)
 
 bio_lsp_conn_t*
 bio_lsp_init_socket_conn(bio_lsp_socket_conn_t* conn, bio_socket_t socket) {

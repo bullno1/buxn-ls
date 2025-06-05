@@ -7,14 +7,20 @@
 
 static void
 shim_stdin(void* userdata) {
+	bio_set_coro_name("stdin");
 	bio_socket_t sock = *(bio_socket_t*)userdata;
 	char buf[BUF_SIZE];
 
+	bio_error_t error = { 0 };
 	while (true) {
-		size_t bytes_read = bio_fread(BIO_STDIN, buf, sizeof(buf), NULL);
-		if (bytes_read == 0) { break; }
+		size_t bytes_read = bio_fread(BIO_STDIN, buf, sizeof(buf), &error);
+		if (bytes_read == 0) {
+			BIO_ERROR("Error while reading: " BIO_ERROR_FMT, BIO_ERROR_FMT_ARGS(&error));
+			break;
+		}
 
-		if (bio_net_send_exactly(sock, buf, bytes_read, NULL) != bytes_read) {
+		if (bio_net_send_exactly(sock, buf, bytes_read, &error) != bytes_read) {
+			BIO_ERROR("Error while forwarding: " BIO_ERROR_FMT, BIO_ERROR_FMT_ARGS(&error));
 			break;
 		}
 	}
@@ -22,14 +28,20 @@ shim_stdin(void* userdata) {
 
 static void
 shim_stdout(void* userdata) {
+	bio_set_coro_name("stdout");
 	bio_socket_t sock = *(bio_socket_t*)userdata;
 	char buf[BUF_SIZE];
 
+	bio_error_t error = { 0 };
 	while (true) {
 		size_t bytes_recv = bio_net_recv(sock, buf, sizeof(buf), NULL);
-		if (bytes_recv == 0) { break; }
+		if (bytes_recv == 0) {
+			BIO_ERROR("Error while receiving: " BIO_ERROR_FMT, BIO_ERROR_FMT_ARGS(&error));
+			break;
+		}
 
 		if (bio_fwrite_exactly(BIO_STDOUT, buf, bytes_recv, NULL) != bytes_recv) {
+			BIO_ERROR("Error while forwarding: " BIO_ERROR_FMT, BIO_ERROR_FMT_ARGS(&error));
 			break;
 		}
 	}

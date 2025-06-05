@@ -83,8 +83,8 @@ server_entry(void* userdata) {
 	(void)ctrlc_handler;
 	bio_coro_t ctrlc_handler_coro = bio_spawn(ctrlc_handler, &ctrlc);
 
+	BIO_DEBUG("Waiting for connection");
 	while (!ctrlc.should_terminate) {
-		BIO_DEBUG("Listening");
 		bio_socket_t client;
 		if (!bio_net_accept(server_sock, &client, &error)) {
 			if (!ctrlc.should_terminate) {
@@ -93,6 +93,7 @@ server_entry(void* userdata) {
 					BIO_ERROR_FMT_ARGS(&error)
 				);
 			}
+			BIO_DEBUG("Shutting down");
 			break;
 		}
 
@@ -107,6 +108,7 @@ server_entry(void* userdata) {
 
 	bio_net_close(server_sock, NULL);
 	bio_join(ctrlc_handler_coro);
+
 	return 0;
 }
 

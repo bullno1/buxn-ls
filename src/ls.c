@@ -94,7 +94,26 @@ buxn_ls_cleanup(buxn_ls_ctx_t* ctx) {
 }
 
 static void
-buxn_ls_handle_msg(buxn_ls_ctx_t* ctx, const bio_lsp_in_msg_t* msg) {
+buxn_ls_handle_msg(buxn_ls_ctx_t* ctx, const bio_lsp_in_msg_t* in_msg) {
+	switch (in_msg->type) {
+		case BIO_LSP_MSG_REQUEST:
+			if (strcmp(in_msg->method, "shutdown") == 0) {
+				BIO_INFO("shutdown received");
+				bio_lsp_out_msg_t reply = buxn_ls_begin_reply(ctx, BIO_LSP_MSG_RESULT, in_msg);
+				reply.value = yyjson_mut_null(reply.doc);
+				buxn_ls_end_reply(ctx, &reply);
+			}
+			break;
+		case BIO_LSP_MSG_NOTIFICATION:
+			if (strcmp(in_msg->method, "exit") == 0) {
+				BIO_INFO("exit received");
+				ctx->should_terminate = true;
+			}
+			break;
+		default:
+			BIO_WARN("Dropped message");
+			break;
+	}
 }
 
 int
@@ -115,6 +134,8 @@ buxn_ls(bio_lsp_conn_t* conn) {
 			.free = buxn_ls_json_free,
 		},
 	};
+
+	BIO_DEBUG("Waiting for client to call: initialize");
 
 	bool initialized = false;
 	while (!initialized) {
@@ -155,6 +176,8 @@ buxn_ls(bio_lsp_conn_t* conn) {
 		}
 	}
 
+	BIO_DEBUG("Waiting for client to send: initialized");
+
 	initialized = false;
 	while (!initialized) {
 		if ((required_recv_buf_size = bio_lsp_recv_msg_header(&reader, &error)) == 0) {
@@ -187,7 +210,7 @@ buxn_ls(bio_lsp_conn_t* conn) {
 		}
 	}
 
-	BIO_INFO("Initialized");
+	BIO_DEBUG("Initialized");
 
 	while (!ctx.should_terminate) {
 		if ((required_recv_buf_size = bio_lsp_recv_msg_header(&reader, &error)) == 0) {
@@ -212,5 +235,7 @@ buxn_ls(bio_lsp_conn_t* conn) {
 end:
 	buxn_ls_cleanup(&ctx);
 	buxn_ls_free(recv_buf);
+
+	BIO_DEBUG("Shutdown");
 	return exit_code;
 }
