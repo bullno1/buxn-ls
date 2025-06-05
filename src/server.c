@@ -1,3 +1,10 @@
+#ifdef __linux__
+#define _GNU_SOURCE
+#include <sys/signalfd.h>
+#include <signal.h>
+#include <bio/file.h>
+#endif
+
 #include "common.h"
 #include <string.h>
 #include <bio/net.h>
@@ -8,6 +15,34 @@ typedef struct {
 	bio_socket_t client;
 	bio_signal_t ready_sig;
 } args_t;
+
+typedef struct {
+	bio_socket_t server_sock;
+	bool should_terminate;
+} ctrlc_ctx_t;
+
+static void
+ctrlc_handler(void* userdata) {
+	ctrlc_ctx_t* ctx = userdata;
+
+	sigset_t mask, old;
+	sigemptyset(&mask);
+	sigaddset(&mask, SIGTERM);
+	sigaddset(&mask, SIGINT);
+	pthread_sigmask(SIG_BLOCK, &mask, &old);
+
+	int sigfd = signalfd(-1, &mask, SFD_CLOEXEC);
+	bio_file_t sig_file = bio_fdopen(sigfd);
+	struct signalfd_siginfo ssi;
+	bio_fread(sig_file, &ssi, sizeof(ssi), NULL);
+	BIO_INFO("Received signal: %d", ssi.ssi_signo);
+
+	pthread_sigmask(SIG_SETMASK, &old, NULL);
+
+	ctx->should_terminate = true;
+	bio_net_close(ctx->server_sock, NULL);
+	bio_fclose(sig_file, NULL);
+}
 
 static void
 ls_wrapper(void* userdata) {
@@ -42,13 +77,22 @@ server_entry(void* userdata) {
 		return 1;
 	}
 
-	while (true) {
+	ctrlc_ctx_t ctrlc = {
+		.server_sock = server_sock,
+	};
+	(void)ctrlc_handler;
+	bio_coro_t ctrlc_handler_coro = bio_spawn(ctrlc_handler, &ctrlc);
+
+	while (!ctrlc.should_terminate) {
+		BIO_DEBUG("Listening");
 		bio_socket_t client;
 		if (!bio_net_accept(server_sock, &client, &error)) {
-			BIO_ERROR(
-				"Could not accept connection: " BIO_ERROR_FMT,
-				BIO_ERROR_FMT_ARGS(&error)
-			);
+			if (!ctrlc.should_terminate) {
+				BIO_ERROR(
+					"Could not accept connection: " BIO_ERROR_FMT,
+					BIO_ERROR_FMT_ARGS(&error)
+				);
+			}
 			break;
 		}
 
@@ -62,6 +106,7 @@ server_entry(void* userdata) {
 	}
 
 	bio_net_close(server_sock, NULL);
+	bio_join(ctrlc_handler_coro);
 	return 0;
 }
 
