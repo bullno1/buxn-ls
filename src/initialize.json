@@ -1,0 +1,11 @@
+{
+	"capabilities": {
+		"textDocumentSync": {
+			"openClose": true,
+			"change": 1
+		}
+	},
+	"serverInfo": {
+		"name": "buxn-ls"
+	}
+}

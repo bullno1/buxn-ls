@@ -1,0 +1,3 @@
+#include <xincbin.h>
+
+XINCBIN(initialize_json, "../../src/initialize.json")
