@@ -13,6 +13,9 @@
 #define BIO_LSP_JSON_LIT_STR(DOC, STR) \
 	yyjson_mut_strn((DOC), STR, BIO_LSP_LIT_STRLEN(STR))
 
+#define BIO_LSP_STR_STARTS_WITH(STR, PREFIX) \
+	(strncmp((STR), PREFIX, BIO_LSP_LIT_STRLEN(PREFIX)) == 0)
+
 typedef struct bio_lsp_conn_s bio_lsp_conn_t;
 struct yyjson_alc;
 
@@ -47,7 +50,7 @@ typedef enum {
 	BIO_LSP_MSG_NOTIFICATION,
 } bio_lsp_msg_type_t;
 
-typedef struct {
+typedef struct bio_lsp_in_msg_s {
 	bio_lsp_msg_type_t type;
 	struct yyjson_doc* doc;
 	struct yyjson_val* id;

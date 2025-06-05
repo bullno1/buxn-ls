@@ -2,14 +2,17 @@
 #include "lsp.h"
 #include "common.h"
 #include "resources.h"
+#include "text_document.h"
 #include <string.h>
 #include <yyjson.h>
+#include <yuarel.h>
 
 typedef struct {
 	bio_lsp_conn_t* conn;
 	bool should_terminate;
 	yyjson_alc json_allocator;
 	char name_buf[sizeof("ls:2147483647")];
+	buxn_ls_docs_t docs;
 } buxn_ls_ctx_t;
 
 static void*
@@ -62,11 +65,68 @@ buxn_ls_end_reply(buxn_ls_ctx_t* ctx, const bio_lsp_out_msg_t* msg) {
 	return success;
 }
 
-static void
+static bool
 buxn_ls_initialize(buxn_ls_ctx_t* ctx, const bio_lsp_in_msg_t* msg) {
 	int pid = yyjson_get_int(BIO_LSP_JSON_GET_LIT(msg->value, "processId"));
 	snprintf(ctx->name_buf, sizeof(ctx->name_buf), "ls:%d", pid);
 	bio_set_coro_name(ctx->name_buf);
+	BIO_INFO("Initializing");
+
+	// Find root dir
+	// From workspaceFolders
+	yyjson_val* workspace_folders = BIO_LSP_JSON_GET_LIT(msg->value, "workspaceFolders");
+	size_t num_folders = yyjson_arr_size(workspace_folders);
+	const char* root_dir = NULL;
+	if (num_folders >= 1) {
+		if (num_folders > 1) { BIO_WARN("Picking the first workspace folder as root"); }
+
+		const char* workspace = yyjson_get_str(
+			BIO_LSP_JSON_GET_LIT(yyjson_arr_get_first(workspace_folders), "uri")
+		);
+		struct yuarel url;
+		if (
+			workspace != NULL
+			&& yuarel_parse(&url, (char*)workspace) == 0
+			&& strcmp(url.scheme, "file") == 0
+		) {
+			BIO_INFO("Root dir: %s", url.path);
+			root_dir = url.path;
+		}
+	}
+
+	// From rootUri
+	if (root_dir == NULL) {
+		const char* root_uri = yyjson_get_str(BIO_LSP_JSON_GET_LIT(msg->value, "rootUri"));
+		struct yuarel url;
+		if (
+			root_uri != NULL
+			&& yuarel_parse(&url, (char*)root_uri) == 0
+			&& strcmp(url.scheme, "file") == 0
+		) {
+			BIO_INFO("Root dir: %s", url.path);
+			root_dir = url.path;
+		}
+	}
+
+	// From rootPath
+	if (root_dir == NULL) {
+		const char* root_path = yyjson_get_str(BIO_LSP_JSON_GET_LIT(msg->value, "rootPath"));
+		if (root_path != NULL) {
+			BIO_INFO("Root dir: %s", root_path);
+			root_dir = root_path;
+		}
+	}
+
+	if (root_dir == NULL) {
+		bio_lsp_out_msg_t reply = buxn_ls_begin_reply(ctx, BIO_LSP_MSG_ERROR, msg);
+		reply.value = yyjson_mut_obj(reply.doc);
+		yyjson_mut_obj_add_int(reply.doc, reply.value, "code", -32602);
+		yyjson_mut_obj_add_str(reply.doc, reply.value, "message", "Root path was not provided");
+		buxn_ls_end_reply(ctx, &reply);
+		return false;
+	}
+
+	buxn_ls_text_document_init(&ctx->docs, root_dir);
 
 	xincbin_data_t initialize_json = XINCBIN_GET(initialize_json);
 	// Can't do in-situ as multiple instances in server mode share the same
@@ -87,10 +147,12 @@ buxn_ls_initialize(buxn_ls_ctx_t* ctx, const bio_lsp_in_msg_t* msg) {
 	buxn_ls_end_reply(ctx, &reply);
 
 	buxn_ls_free(initialize_mem);
+	return true;
 }
 
 static void
 buxn_ls_cleanup(buxn_ls_ctx_t* ctx) {
+	buxn_ls_text_document_cleanup(&ctx->docs);
 }
 
 static void
@@ -114,6 +176,8 @@ buxn_ls_handle_msg(buxn_ls_ctx_t* ctx, const bio_lsp_in_msg_t* in_msg) {
 			if (strcmp(in_msg->method, "exit") == 0) {
 				BIO_INFO("exit received");
 				ctx->should_terminate = true;
+			} else if (BIO_LSP_STR_STARTS_WITH(in_msg->method, "textDocument/")) {
+				buxn_ls_handle_text_document_msg(&ctx->docs, in_msg);
 			} else {
 				BIO_WARN("Dropped notification: %s", in_msg->method);
 			}
@@ -154,6 +218,7 @@ buxn_ls(bio_lsp_conn_t* conn) {
 		if (required_recv_buf_size > recv_buf_size) {
 			buxn_ls_free(recv_buf);
 			recv_buf = buxn_ls_malloc(required_recv_buf_size);
+			BIO_DEBUG("Resize recv buffer: %zu -> %zu", recv_buf_size, required_recv_buf_size);
 			recv_buf_size = required_recv_buf_size;
 		}
 
@@ -171,7 +236,10 @@ buxn_ls(bio_lsp_conn_t* conn) {
 				break;
 			case BIO_LSP_MSG_REQUEST:
 				if (strcmp(in_msg.method, "initialize") == 0) {
-					buxn_ls_initialize(&ctx, &in_msg);
+					if (!buxn_ls_initialize(&ctx, &in_msg)) {
+						goto end;
+					}
+
 					initialized = true;
 				} else {
 					BIO_ERROR("Client sent invalid message during initialization");
@@ -195,6 +263,7 @@ buxn_ls(bio_lsp_conn_t* conn) {
 		if (required_recv_buf_size > recv_buf_size) {
 			buxn_ls_free(recv_buf);
 			recv_buf = buxn_ls_malloc(required_recv_buf_size);
+			BIO_DEBUG("Resize recv buffer: %zu -> %zu", recv_buf_size, required_recv_buf_size);
 			recv_buf_size = required_recv_buf_size;
 		}
 
@@ -228,6 +297,7 @@ buxn_ls(bio_lsp_conn_t* conn) {
 		if (required_recv_buf_size > recv_buf_size) {
 			buxn_ls_free(recv_buf);
 			recv_buf = buxn_ls_malloc(required_recv_buf_size);
+			BIO_DEBUG("Resize recv buffer: %zu -> %zu", recv_buf_size, required_recv_buf_size);
 			recv_buf_size = required_recv_buf_size;
 		}
 
