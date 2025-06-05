@@ -2,8 +2,14 @@
 #include <bio/net.h>
 #include <bio/file.h>
 #include <string.h>
+#include "ls.h"
 
 #define BUF_SIZE 1024
+
+typedef struct {
+	const char* socket_path;
+	bool fallback;
+} shim_args_t;
 
 static void
 shim_stdin(void* userdata) {
@@ -49,12 +55,12 @@ shim_stdout(void* userdata) {
 
 static int
 shim_entry(void* userdata) {
-	const char* socket_path = userdata;
+	shim_args_t* args = userdata;
 
 	bio_socket_t sock;
 	bio_addr_t addr = { .type = BIO_ADDR_NAMED };
-	addr.named.len = strlen(socket_path);
-	memcpy(addr.named.name, socket_path, addr.named.len);
+	addr.named.len = strlen(args->socket_path);
+	memcpy(addr.named.name, args->socket_path, addr.named.len);
 	bio_error_t error = { 0 };
 	if (!bio_net_connect(
 		BIO_SOCKET_STREAM,
@@ -63,7 +69,13 @@ shim_entry(void* userdata) {
 		&error
 	)) {
 		BIO_ERROR("Could not connect to server: " BIO_ERROR_FMT, BIO_ERROR_FMT_ARGS(&error));
-		return 1;
+
+		if (args->fallback) {
+			BIO_INFO("Falling back to stdio");
+			return buxn_ls_stdio(NULL);
+		} else {
+			return 1;
+		}
 	}
 
 	bio_coro_t stdin_handler = bio_spawn(shim_stdin, &sock);
@@ -78,6 +90,9 @@ shim_entry(void* userdata) {
 }
 
 int
-buxn_ls_shim(const char* socket_path) {
-	return bio_enter(shim_entry, (char*)socket_path);
+buxn_ls_shim(const char* socket_path, bool fallback) {
+	return bio_enter(shim_entry, &(shim_args_t){
+		.socket_path = socket_path,
+		.fallback = fallback,
+	});
 }

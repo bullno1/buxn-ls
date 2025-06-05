@@ -102,12 +102,20 @@ buxn_ls_handle_msg(buxn_ls_ctx_t* ctx, const bio_lsp_in_msg_t* in_msg) {
 				bio_lsp_out_msg_t reply = buxn_ls_begin_reply(ctx, BIO_LSP_MSG_RESULT, in_msg);
 				reply.value = yyjson_mut_null(reply.doc);
 				buxn_ls_end_reply(ctx, &reply);
+			} else {
+				bio_lsp_out_msg_t reply = buxn_ls_begin_reply(ctx, BIO_LSP_MSG_ERROR, in_msg);
+				reply.value = yyjson_mut_obj(reply.doc);
+				yyjson_mut_obj_add_int(reply.doc, reply.value, "code", -32601);
+				yyjson_mut_obj_add_str(reply.doc, reply.value, "message", "Method not found");
+				buxn_ls_end_reply(ctx, &reply);
 			}
 			break;
 		case BIO_LSP_MSG_NOTIFICATION:
 			if (strcmp(in_msg->method, "exit") == 0) {
 				BIO_INFO("exit received");
 				ctx->should_terminate = true;
+			} else {
+				BIO_WARN("Dropped notification: %s", in_msg->method);
 			}
 			break;
 		default:
@@ -238,4 +246,11 @@ end:
 
 	BIO_DEBUG("Shutdown");
 	return exit_code;
+}
+
+int
+buxn_ls_stdio(void* userdata) {
+	(void)userdata;
+	bio_lsp_file_conn_t conn;
+	return buxn_ls(bio_lsp_init_file_conn(&conn, BIO_STDIN, BIO_STDOUT));
 }

@@ -8,13 +8,14 @@ typedef enum {
 	BUXN_LS_STDIO,
 	BUXN_LS_SERVER,
 	BUXN_LS_SHIM,
+	BUXN_LS_DEV,
 } launch_mode_t;
 
 extern int
 buxn_ls_server(const char* socket_path);
 
 extern int
-buxn_ls_shim(const char* socket_path);
+buxn_ls_shim(const char* socket_path, bool fallback);
 
 static inline const char*
 parse_mode(void* userdata, const char* str) {
@@ -28,16 +29,12 @@ parse_mode(void* userdata, const char* str) {
 	} else if (strcmp(str, "shim") == 0) {
 		*mode = BUXN_LS_SHIM;
 		return NULL;
+	} else if (strcmp(str, "dev") == 0) {
+		*mode = BUXN_LS_DEV;
+		return NULL;
 	} else {
 		return "Invalid mode";
 	}
-}
-
-static inline int
-buxn_ls_stdio(void* userdata) {
-	(void)userdata;
-	bio_lsp_file_conn_t conn;
-	return buxn_ls(bio_lsp_init_file_conn(&conn, BIO_STDIN, BIO_STDOUT));
 }
 
 int
@@ -58,7 +55,8 @@ main(int argc, const char* argv[]) {
 				"Available modes:\n\n"
 				"* stdio: Communicate through stdin and stdout\n"
 				"* server: Listens for incoming connection\n"
-				"* shim: Connect to a server and forward stdio to that server\n",
+				"* shim: Connect to a server and forward stdio to that server\n"
+				"* dev: Same as shim but fallback to stdio if the connection failed\n",
 		},
 		{
 			.name = "socket",
@@ -90,7 +88,9 @@ main(int argc, const char* argv[]) {
 		case BUXN_LS_SERVER:
 			return buxn_ls_server(socket_path);
 		case BUXN_LS_SHIM:
-			return buxn_ls_shim(socket_path);
+			return buxn_ls_shim(socket_path, false);
+		case BUXN_LS_DEV:
+			return buxn_ls_shim(socket_path, true);
 	}
 }
 
