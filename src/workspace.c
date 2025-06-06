@@ -4,18 +4,6 @@
 #include <yyjson.h>
 #include <yuarel.h>
 
-static bhash_hash_t
-buxn_ls_str_hash(const void* key, size_t size) {
-	(void)size;
-	return bhash_hash(*(const char**)key, strlen(*(const char**)key));
-}
-
-static bool
-buxn_ls_str_eq(const void* lhs, const void* rhs, size_t size) {
-	(void)size;
-	return strcmp(*(const char**)lhs, *(const char**)rhs) == 0;
-}
-
 static char*
 buxn_ls_workspace_resolve_path(buxn_ls_workspace_t* workspace, char* uri) {
 	struct yuarel url;

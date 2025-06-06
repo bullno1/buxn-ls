@@ -22,3 +22,7 @@ add_subdirectory(yyjson EXCLUDE_FROM_ALL)
 # libyuarel
 add_library(libyuarel STATIC "libyuarel/yuarel.c")
 target_include_directories(libyuarel PUBLIC "libyuarel")
+
+# utf8proc
+add_library(utf8proc STATIC "utf8proc/utf8proc.c")
+target_include_directories(utf8proc PUBLIC "utf8proc")

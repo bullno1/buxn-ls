@@ -19,3 +19,6 @@
 [submodule "deps/libyuarel"]
 	path = deps/libyuarel
 	url = https://github.com/mofosyne/libyuarel.git
+[submodule "deps/utf8proc"]
+	path = deps/utf8proc
+	url = https://github.com/JuliaStrings/utf8proc.git

@@ -11,6 +11,8 @@
 
 static const bio_time_t BUXN_LS_ANALYZE_DELAY_MS = 1000;
 
+typedef BHASH_SET(char*) buxn_ls_str_set_t;
+
 typedef struct {
 	bio_lsp_conn_t* conn;
 	bool should_terminate;
@@ -20,6 +22,10 @@ typedef struct {
 
 	bio_timer_t analyze_delay_timer;
 	buxn_ls_analyzer_t analyzer;
+	buxn_ls_str_set_t diag_file_set_a;
+	buxn_ls_str_set_t diag_file_set_b;
+	buxn_ls_str_set_t* currently_diagnosed_files;
+	buxn_ls_str_set_t* previously_diagnosed_files;
 } buxn_ls_ctx_t;
 
 static void*
@@ -40,7 +46,7 @@ buxn_ls_json_free(void* ctx, void* ptr) {
 }
 
 static bio_lsp_out_msg_t
-buxn_ls_begin_reply(buxn_ls_ctx_t* ctx, bio_lsp_msg_type_t type, const bio_lsp_in_msg_t* in_msg) {
+buxn_ls_begin_msg(buxn_ls_ctx_t* ctx, bio_lsp_msg_type_t type, const bio_lsp_in_msg_t* in_msg) {
 	bio_lsp_out_msg_t out_msg = {
 		.type = type,
 		.doc = yyjson_mut_doc_new(&ctx->json_allocator),
@@ -60,7 +66,7 @@ buxn_ls_begin_reply(buxn_ls_ctx_t* ctx, bio_lsp_msg_type_t type, const bio_lsp_i
 }
 
 static bool
-buxn_ls_end_reply(buxn_ls_ctx_t* ctx, const bio_lsp_out_msg_t* msg) {
+buxn_ls_end_msg(buxn_ls_ctx_t* ctx, const bio_lsp_out_msg_t* msg) {
 	bio_error_t error = { 0 };
 	bool success = bio_lsp_send_msg(ctx->conn, &ctx->json_allocator, msg, &error);
 	yyjson_mut_doc_free(msg->doc);
@@ -73,11 +79,25 @@ buxn_ls_end_reply(buxn_ls_ctx_t* ctx, const bio_lsp_out_msg_t* msg) {
 }
 
 static bool
-buxn_ls_initialize(buxn_ls_ctx_t* ctx, const bio_lsp_in_msg_t* msg) {
+buxn_ls_initialize(
+	buxn_ls_ctx_t* ctx,
+	barena_pool_t* pool,
+	const bio_lsp_in_msg_t* msg
+) {
 	int pid = yyjson_get_int(BIO_LSP_JSON_GET_LIT(msg->value, "processId"));
 	snprintf(ctx->name_buf, sizeof(ctx->name_buf), "ls:%d", pid);
 	bio_set_coro_name(ctx->name_buf);
 	BIO_INFO("Initializing");
+
+	buxn_ls_analyzer_init(&ctx->analyzer, pool);
+
+	bhash_config_t hash_config = bhash_config_default();
+	hash_config.eq = buxn_ls_str_eq;
+	hash_config.hash = buxn_ls_str_hash;
+	bhash_init_set(&ctx->diag_file_set_a, hash_config);
+	bhash_init_set(&ctx->diag_file_set_b, hash_config);
+	ctx->currently_diagnosed_files = &ctx->diag_file_set_a;
+	ctx->previously_diagnosed_files = &ctx->diag_file_set_b;
 
 	// Find root dir
 	// From workspaceFolders
@@ -125,11 +145,11 @@ buxn_ls_initialize(buxn_ls_ctx_t* ctx, const bio_lsp_in_msg_t* msg) {
 	}
 
 	if (root_dir == NULL) {
-		bio_lsp_out_msg_t reply = buxn_ls_begin_reply(ctx, BIO_LSP_MSG_ERROR, msg);
+		bio_lsp_out_msg_t reply = buxn_ls_begin_msg(ctx, BIO_LSP_MSG_ERROR, msg);
 		reply.value = yyjson_mut_obj(reply.doc);
 		yyjson_mut_obj_add_int(reply.doc, reply.value, "code", -32602);
 		yyjson_mut_obj_add_str(reply.doc, reply.value, "message", "Root path was not provided");
-		buxn_ls_end_reply(ctx, &reply);
+		buxn_ls_end_msg(ctx, &reply);
 		return false;
 	}
 
@@ -149,9 +169,9 @@ buxn_ls_initialize(buxn_ls_ctx_t* ctx, const bio_lsp_in_msg_t* msg) {
 		NULL
 	);
 
-	bio_lsp_out_msg_t reply = buxn_ls_begin_reply(ctx, BIO_LSP_MSG_RESULT, msg);
+	bio_lsp_out_msg_t reply = buxn_ls_begin_msg(ctx, BIO_LSP_MSG_RESULT, msg);
 	reply.value = yyjson_val_mut_copy(reply.doc, yyjson_doc_get_root(initialize_doc));
-	buxn_ls_end_reply(ctx, &reply);
+	buxn_ls_end_msg(ctx, &reply);
 
 	buxn_ls_free(initialize_mem);
 	return true;
@@ -160,16 +180,138 @@ buxn_ls_initialize(buxn_ls_ctx_t* ctx, const bio_lsp_in_msg_t* msg) {
 static void
 buxn_ls_cleanup(buxn_ls_ctx_t* ctx) {
 	bio_cancel_timer(ctx->analyze_delay_timer);
+
+	for (bhash_index_t i = 0; i < bhash_len(ctx->previously_diagnosed_files); ++i) {
+		char* uri = ctx->previously_diagnosed_files->keys[i];
+		buxn_ls_free(uri);
+	}
+
+	bhash_cleanup(&ctx->diag_file_set_a);
+	bhash_cleanup(&ctx->diag_file_set_b);
 	buxn_ls_workspace_cleanup(&ctx->workspace);
+	buxn_ls_analyzer_cleanup(&ctx->analyzer);
+}
+
+static void
+buxn_ls_serialize_lsp_position(
+	yyjson_mut_doc* doc,
+	yyjson_mut_val* json,
+	const bio_lsp_position_t* position
+) {
+	yyjson_mut_obj_add_int(doc, json, "line", position->line);
+	yyjson_mut_obj_add_int(doc, json, "character", position->character);
+}
+
+static void
+buxn_ls_serialize_lsp_range(
+	yyjson_mut_doc* doc,
+	yyjson_mut_val* json,
+	const bio_lsp_range_t* range
+) {
+	buxn_ls_serialize_lsp_position(doc, yyjson_mut_obj_add_obj(doc, json, "start"), &range->start);
+	buxn_ls_serialize_lsp_position(doc, yyjson_mut_obj_add_obj(doc, json, "end"), &range->end);
 }
 
 static void
 buxn_ls_analyze_workspace(void* userdata) {
 	buxn_ls_ctx_t* ctx = userdata;
+	buxn_ls_analyzer_t* analyzer = &ctx->analyzer;
 
 	BIO_INFO("Analyzing");
-	buxn_ls_analyze(&ctx->analyzer, &ctx->workspace);
+	buxn_ls_analyze(analyzer, &ctx->workspace);
 	BIO_INFO("Done");
+
+	const char* last_uri = NULL;
+	size_t num_diags = barray_len(analyzer->diagnostics);
+	bio_lsp_out_msg_t msg = { 0 };
+	yyjson_mut_val* diag_arr = NULL;
+	for (size_t i = 0; i < num_diags; ++i) {
+		const buxn_ls_diagnostic_t* diag = &analyzer->diagnostics[i];
+
+		if (diag->location.uri != last_uri) {  // Next file encountered
+			// Move uri to the set of diagnosed files
+			bhash_index_t remove_index = bhash_remove(
+				ctx->previously_diagnosed_files,
+				(char*){ (char*)diag->location.uri }
+			);
+			if (bhash_is_valid(remove_index)) {
+				bhash_put_key(
+					ctx->currently_diagnosed_files,
+					ctx->previously_diagnosed_files->keys[remove_index]
+				);
+			} else {
+				char* uri_copy = buxn_ls_strcpy(diag->location.uri);
+				bhash_put_key(ctx->currently_diagnosed_files, uri_copy);
+			}
+
+			// Send currently building diagnostic
+			if (msg.method != NULL) {
+				BIO_DEBUG("Sending diagnostic for: %s", last_uri);
+				bool success = buxn_ls_end_msg(ctx, &msg);
+				msg.method = NULL;
+				diag_arr = NULL;
+				if (!success) { break; }
+			}
+
+			// Build a new one
+			msg = buxn_ls_begin_msg(ctx, BIO_LSP_MSG_NOTIFICATION, NULL);
+			msg.method = "textDocument/publishDiagnostics";
+			msg.value = yyjson_mut_obj(msg.doc);
+			yyjson_mut_obj_add_str(msg.doc, msg.value, "uri", diag->location.uri);
+			diag_arr = yyjson_mut_obj_add_arr(msg.doc, msg.value, "diagnostics");
+
+			last_uri = diag->location.uri;
+		}
+
+		yyjson_mut_val* diag_obj = yyjson_mut_arr_add_obj(msg.doc, diag_arr);
+		yyjson_mut_obj_add_str(msg.doc, diag_obj, "source", diag->source);
+		yyjson_mut_obj_add_str(msg.doc, diag_obj, "message", diag->message);
+		yyjson_mut_obj_add_int(msg.doc, diag_obj, "severity", diag->severity);
+		buxn_ls_serialize_lsp_range(
+			msg.doc,
+			yyjson_mut_obj_add_obj(msg.doc, diag_obj, "range"),
+			&diag->location.range
+		);
+		// TODO: convert related_message to information diagnostic if client
+		// does not have the capability
+		if (diag->related_message) {
+			yyjson_mut_val* related_arr = yyjson_mut_obj_add_arr(msg.doc, diag_obj, "relatedInformation");
+			yyjson_mut_val* related_obj = yyjson_mut_arr_add_obj(msg.doc, related_arr);
+			yyjson_mut_obj_add_str(msg.doc, related_obj, "message", diag->related_message);
+			yyjson_mut_val* location_obj = yyjson_mut_obj_add_obj(msg.doc, related_obj, "location");
+			yyjson_mut_obj_add_str(msg.doc, location_obj, "uri", diag->location.uri);
+			buxn_ls_serialize_lsp_range(
+				msg.doc,
+				yyjson_mut_obj_add_obj(msg.doc, location_obj, "range"),
+				&diag->related_location.range
+			);
+		}
+	}
+	// Last message
+	if (msg.method != NULL) {
+		BIO_DEBUG("Sending diagnostic for: %s", last_uri);
+		buxn_ls_end_msg(ctx, &msg);
+	}
+
+	// Unpublish from files with no diagnostic
+	for (bhash_index_t i = 0; i < bhash_len(ctx->previously_diagnosed_files); ++i) {
+		char* uri = ctx->previously_diagnosed_files->keys[i];
+		BIO_DEBUG("Clearing diagnostic for: %s", uri);
+		msg = buxn_ls_begin_msg(ctx, BIO_LSP_MSG_NOTIFICATION, NULL);
+		msg.method = "textDocument/publishDiagnostics";
+		msg.value = yyjson_mut_obj(msg.doc);
+		yyjson_mut_obj_add_str(msg.doc, msg.value, "uri", uri);
+		yyjson_mut_obj_add_arr(msg.doc, msg.value, "diagnostics");
+		buxn_ls_end_msg(ctx, &msg);
+
+		buxn_ls_free(uri);
+	}
+	bhash_clear(ctx->previously_diagnosed_files);
+
+	// Swap current and previous set
+	buxn_ls_str_set_t* tmp = ctx->previously_diagnosed_files;
+	ctx->previously_diagnosed_files = ctx->currently_diagnosed_files;
+	ctx->currently_diagnosed_files = tmp;
 }
 
 static void
@@ -179,15 +321,16 @@ buxn_ls_handle_msg(buxn_ls_ctx_t* ctx, const bio_lsp_in_msg_t* in_msg) {
 			if (strcmp(in_msg->method, "shutdown") == 0) {
 				BIO_INFO("shutdown received");
 				bio_cancel_timer(ctx->analyze_delay_timer);
-				bio_lsp_out_msg_t reply = buxn_ls_begin_reply(ctx, BIO_LSP_MSG_RESULT, in_msg);
+				bio_lsp_out_msg_t reply = buxn_ls_begin_msg(ctx, BIO_LSP_MSG_RESULT, in_msg);
 				reply.value = yyjson_mut_null(reply.doc);
-				buxn_ls_end_reply(ctx, &reply);
+				buxn_ls_end_msg(ctx, &reply);
 			} else {
-				bio_lsp_out_msg_t reply = buxn_ls_begin_reply(ctx, BIO_LSP_MSG_ERROR, in_msg);
+				BIO_WARN("Client called an unimplemented method: %s", in_msg->method);
+				bio_lsp_out_msg_t reply = buxn_ls_begin_msg(ctx, BIO_LSP_MSG_ERROR, in_msg);
 				reply.value = yyjson_mut_obj(reply.doc);
 				yyjson_mut_obj_add_int(reply.doc, reply.value, "code", -32601);
 				yyjson_mut_obj_add_str(reply.doc, reply.value, "message", "Method not found");
-				buxn_ls_end_reply(ctx, &reply);
+				buxn_ls_end_msg(ctx, &reply);
 			}
 			break;
 		case BIO_LSP_MSG_NOTIFICATION:
@@ -233,7 +376,6 @@ buxn_ls(bio_lsp_conn_t* conn, struct barena_pool_s* pool) {
 			.free = buxn_ls_json_free,
 		},
 	};
-	buxn_ls_analyzer_init(&ctx.analyzer, pool);
 
 	BIO_DEBUG("Waiting for client to call: initialize");
 
@@ -264,7 +406,7 @@ buxn_ls(bio_lsp_conn_t* conn, struct barena_pool_s* pool) {
 				break;
 			case BIO_LSP_MSG_REQUEST:
 				if (strcmp(in_msg.method, "initialize") == 0) {
-					if (!buxn_ls_initialize(&ctx, &in_msg)) {
+					if (!buxn_ls_initialize(&ctx, pool, &in_msg)) {
 						goto end;
 					}
 
@@ -341,7 +483,6 @@ buxn_ls(bio_lsp_conn_t* conn, struct barena_pool_s* pool) {
 end:
 	buxn_ls_cleanup(&ctx);
 	buxn_ls_free(recv_buf);
-	buxn_ls_analyzer_cleanup(&ctx.analyzer);
 
 	BIO_DEBUG("Shutdown");
 	return exit_code;

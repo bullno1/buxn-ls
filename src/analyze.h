@@ -22,11 +22,16 @@ typedef struct {
 	bio_lsp_diagnostic_severity_t severity;
 	const char* source;
 	const char* message;
+	const char* related_message;
 } buxn_ls_diagnostic_t;
 
+typedef struct {
+	const char* chars;
+	size_t len;
+} buxn_ls_str_t;
+
 struct buxn_asm_file_s {
-	const char* content;
-	size_t size;
+	buxn_ls_str_t content;
 	size_t offset;
 	bool in_use;
 };
@@ -35,6 +40,7 @@ typedef struct {
 	barena_t arena;
 	barray(buxn_ls_diagnostic_t) diagnostics;
 	BHASH_TABLE(const char*, struct buxn_asm_file_s) files;
+	barray(buxn_ls_str_t) lines;
 } buxn_ls_analyzer_t;
 
 void
