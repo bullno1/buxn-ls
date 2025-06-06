@@ -46,11 +46,13 @@ buxn_ls_convert_position(buxn_ls_analyzer_t* analyzer, bio_lsp_position_t* pos) 
 	}
 
 	const buxn_ls_str_t* line = &analyzer->lines[pos->line];
-	int utf8_offset = pos->character;
+	int utf8_offset = pos->character - 1;
 	utf8proc_ssize_t byte_offset = 0;
 	utf8proc_ssize_t line_len = line->len;
 	int code_unit_offset = 0;
 	while (true) {
+		if (byte_offset >= utf8_offset || byte_offset >= line_len) { break; }
+
 		utf8proc_int32_t codepoint;
 		utf8proc_ssize_t num_bytes = utf8proc_iterate(
 			(const utf8proc_uint8_t*)line->chars + byte_offset,
@@ -62,12 +64,9 @@ buxn_ls_convert_position(buxn_ls_analyzer_t* analyzer, bio_lsp_position_t* pos) 
 			BIO_WARN("Invalid codepoint encountered on line %d", pos->line + 1);
 			break;
 		}
-		if (byte_offset + num_bytes >= utf8_offset) { break; }
 
 		byte_offset += num_bytes;
-		code_unit_offset += codepoint <= 0xFFFF ? 1 : 2;
-
-		if (byte_offset >= line_len) { break; }
+		code_unit_offset += (codepoint <= 0xFFFF ? 1 : 2);
 	}
 	pos->character = code_unit_offset;
 }

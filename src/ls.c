@@ -9,7 +9,7 @@
 #include <yuarel.h>
 #include <bio/timer.h>
 
-static const bio_time_t BUXN_LS_ANALYZE_DELAY_MS = 1000;
+static const bio_time_t BUXN_LS_ANALYZE_DELAY_MS = 200;
 
 typedef BHASH_SET(char*) buxn_ls_str_set_t;
 
