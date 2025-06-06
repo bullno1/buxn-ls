@@ -69,6 +69,21 @@ typedef struct {
 	struct yyjson_mut_val* value;
 } bio_lsp_out_msg_t;
 
+typedef struct {
+	int line;
+	int character;
+} bio_lsp_position_t;
+
+typedef struct {
+	bio_lsp_position_t start;
+	bio_lsp_position_t end;
+} bio_lsp_range_t;
+
+typedef struct {
+	const char* uri;
+	bio_lsp_range_t range;
+} bio_lsp_location_t;
+
 bio_lsp_conn_t*
 bio_lsp_init_socket_conn(bio_lsp_socket_conn_t* conn, bio_socket_t socket);
 

@@ -2,17 +2,24 @@
 #include "lsp.h"
 #include "common.h"
 #include "resources.h"
-#include "text_document.h"
+#include "workspace.h"
+#include "analyze.h"
 #include <string.h>
 #include <yyjson.h>
 #include <yuarel.h>
+#include <bio/timer.h>
+
+static const bio_time_t BUXN_LS_ANALYZE_DELAY_MS = 1000;
 
 typedef struct {
 	bio_lsp_conn_t* conn;
 	bool should_terminate;
 	yyjson_alc json_allocator;
 	char name_buf[sizeof("ls:2147483647")];
-	buxn_ls_docs_t docs;
+	buxn_ls_workspace_t workspace;
+
+	bio_timer_t analyze_delay_timer;
+	buxn_ls_analyzer_t analyzer;
 } buxn_ls_ctx_t;
 
 static void*
@@ -126,7 +133,7 @@ buxn_ls_initialize(buxn_ls_ctx_t* ctx, const bio_lsp_in_msg_t* msg) {
 		return false;
 	}
 
-	buxn_ls_text_document_init(&ctx->docs, root_dir);
+	buxn_ls_workspace_init(&ctx->workspace, root_dir);
 
 	xincbin_data_t initialize_json = XINCBIN_GET(initialize_json);
 	// Can't do in-situ as multiple instances in server mode share the same
@@ -152,7 +159,17 @@ buxn_ls_initialize(buxn_ls_ctx_t* ctx, const bio_lsp_in_msg_t* msg) {
 
 static void
 buxn_ls_cleanup(buxn_ls_ctx_t* ctx) {
-	buxn_ls_text_document_cleanup(&ctx->docs);
+	bio_cancel_timer(ctx->analyze_delay_timer);
+	buxn_ls_workspace_cleanup(&ctx->workspace);
+}
+
+static void
+buxn_ls_analyze_workspace(void* userdata) {
+	buxn_ls_ctx_t* ctx = userdata;
+
+	BIO_INFO("Analyzing");
+	buxn_ls_analyze(&ctx->analyzer, &ctx->workspace);
+	BIO_INFO("Done");
 }
 
 static void
@@ -161,6 +178,7 @@ buxn_ls_handle_msg(buxn_ls_ctx_t* ctx, const bio_lsp_in_msg_t* in_msg) {
 		case BIO_LSP_MSG_REQUEST:
 			if (strcmp(in_msg->method, "shutdown") == 0) {
 				BIO_INFO("shutdown received");
+				bio_cancel_timer(ctx->analyze_delay_timer);
 				bio_lsp_out_msg_t reply = buxn_ls_begin_reply(ctx, BIO_LSP_MSG_RESULT, in_msg);
 				reply.value = yyjson_mut_null(reply.doc);
 				buxn_ls_end_reply(ctx, &reply);
@@ -177,7 +195,16 @@ buxn_ls_handle_msg(buxn_ls_ctx_t* ctx, const bio_lsp_in_msg_t* in_msg) {
 				BIO_INFO("exit received");
 				ctx->should_terminate = true;
 			} else if (BIO_LSP_STR_STARTS_WITH(in_msg->method, "textDocument/")) {
-				buxn_ls_handle_text_document_msg(&ctx->docs, in_msg);
+				buxn_ls_workspace_update(&ctx->workspace, in_msg);
+				if (bio_is_timer_pending(ctx->analyze_delay_timer)) {
+					bio_reset_timer(ctx->analyze_delay_timer, BUXN_LS_ANALYZE_DELAY_MS);
+				} else {
+					ctx->analyze_delay_timer = bio_create_timer(
+						BIO_TIMER_ONESHOT,
+						BUXN_LS_ANALYZE_DELAY_MS,
+						buxn_ls_analyze_workspace, ctx
+					);
+				}
 			} else {
 				BIO_WARN("Dropped notification: %s", in_msg->method);
 			}
@@ -189,7 +216,7 @@ buxn_ls_handle_msg(buxn_ls_ctx_t* ctx, const bio_lsp_in_msg_t* in_msg) {
 }
 
 int
-buxn_ls(bio_lsp_conn_t* conn) {
+buxn_ls(bio_lsp_conn_t* conn, struct barena_pool_s* pool) {
 	bio_lsp_msg_reader_t reader = { .conn = conn };
 
 	int exit_code = 1;
@@ -206,6 +233,7 @@ buxn_ls(bio_lsp_conn_t* conn) {
 			.free = buxn_ls_json_free,
 		},
 	};
+	buxn_ls_analyzer_init(&ctx.analyzer, pool);
 
 	BIO_DEBUG("Waiting for client to call: initialize");
 
@@ -313,6 +341,7 @@ buxn_ls(bio_lsp_conn_t* conn) {
 end:
 	buxn_ls_cleanup(&ctx);
 	buxn_ls_free(recv_buf);
+	buxn_ls_analyzer_cleanup(&ctx.analyzer);
 
 	BIO_DEBUG("Shutdown");
 	return exit_code;
@@ -322,5 +351,9 @@ int
 buxn_ls_stdio(void* userdata) {
 	(void)userdata;
 	bio_lsp_file_conn_t conn;
-	return buxn_ls(bio_lsp_init_file_conn(&conn, BIO_STDIN, BIO_STDOUT));
+	barena_pool_t pool;
+	barena_pool_init(&pool, 1);
+	int exit_code = buxn_ls(bio_lsp_init_file_conn(&conn, BIO_STDIN, BIO_STDOUT), &pool);
+	barena_pool_cleanup(&pool);
+	return exit_code;
 }

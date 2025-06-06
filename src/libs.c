@@ -9,3 +9,5 @@ buxn_dbg_blib_realloc(void* ptr, size_t size, void* ctx) {
 #define BLIB_IMPLEMENTATION
 #include <barg.h>
 #include <bhash.h>
+#include <barena.h>
+#include <barray.h>

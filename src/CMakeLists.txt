@@ -5,7 +5,8 @@ set(SOURCES
 	"shim.c"
 	"ls.c"
 	"lsp.c"
-	"text_document.c"
+	"analyze.c"
+	"workspace.c"
 	"libs.c"
 )
 add_executable(buxn-ls ${SOURCES})
@@ -16,4 +17,5 @@ target_link_libraries(
 	blibs
 	yyjson
 	libyuarel
+	buxn-asm
 )
