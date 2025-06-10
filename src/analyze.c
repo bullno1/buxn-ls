@@ -1,5 +1,6 @@
 #include "analyze.h"
 #include "workspace.h"
+#include "common.h"
 #include <buxn/asm/asm.h>
 #include <bio/file.h>
 #include <stdio.h>
@@ -130,77 +131,58 @@ buxn_asm_file_t*
 buxn_asm_fopen(buxn_asm_ctx_t* ctx, const char* filename) {
 	buxn_ls_analyzer_t* analyzer = ctx->analyzer;
 	bhash_index_t file_index = bhash_find(&analyzer->files, filename);
-	if (bhash_is_valid(file_index) && !analyzer->files.values[file_index].in_use) {
-		buxn_asm_file_t* file = &analyzer->files.values[file_index];
-		file->in_use = true;
-		file->offset = 0;
-		return file;
-	}
-
-	bhash_index_t doc_index = bhash_find(&ctx->workspace->docs, (char*){ (char*)filename });
-	buxn_asm_file_t file;
-	if (bhash_is_valid(doc_index)) {
-		file = (buxn_asm_file_t){
-			.content = {
+	buxn_ls_str_t content;
+	if (bhash_is_valid(file_index)) {  // File is already read
+		content = analyzer->files.values[file_index];
+	} else {  // New file
+		bhash_index_t doc_index = bhash_find(&ctx->workspace->docs, (char*){ (char*)filename });
+		if (bhash_is_valid(doc_index)) {  // File is managed
+			content = (buxn_ls_str_t){
 				.chars = ctx->workspace->docs.values[doc_index].content,
 				.len = ctx->workspace->docs.values[doc_index].size,
-			},
-			.in_use = true,
-		};
-	} else {
-		bio_file_t fd;
-		bio_error_t error = { 0 };
-		char full_path[1024];
-		snprintf(full_path, sizeof(full_path), "%s%s", ctx->workspace->root_dir, filename);
-		if (!bio_fopen(&fd, full_path, "r", &error)) {
-			BIO_ERROR("Could not open %s: " BIO_ERROR_FMT, full_path, BIO_ERROR_FMT_ARGS(&error));
-			return NULL;
-		}
+			};
+		} else {  // File is unmanaged
+			bio_file_t fd;
+			bio_error_t error = { 0 };
+			char full_path[1024];
+			snprintf(full_path, sizeof(full_path), "%s%s", ctx->workspace->root_dir, filename);
+			if (!bio_fopen(&fd, full_path, "r", &error)) {
+				BIO_ERROR("Could not open %s: " BIO_ERROR_FMT, full_path, BIO_ERROR_FMT_ARGS(&error));
+				return NULL;
+			}
 
-		bio_stat_t stat;
-		if (!bio_fstat(fd, &stat,&error)) {
-			BIO_ERROR("Could not stat %s: " BIO_ERROR_FMT, full_path, BIO_ERROR_FMT_ARGS(&error));
-			bio_fclose(fd, NULL);
-			return NULL;
-		}
+			bio_stat_t stat;
+			if (!bio_fstat(fd, &stat,&error)) {
+				BIO_ERROR("Could not stat %s: " BIO_ERROR_FMT, full_path, BIO_ERROR_FMT_ARGS(&error));
+				bio_fclose(fd, NULL);
+				return NULL;
+			}
 
-		char* content = barena_memalign(&ctx->analyzer->arena, stat.size, _Alignof(char));
-		if (bio_fread_exactly(fd, content, stat.size, &error) != stat.size) {
-			BIO_ERROR("Error while reading %s: " BIO_ERROR_FMT, full_path, BIO_ERROR_FMT_ARGS(&error));
-			bio_fclose(fd, NULL);
-			return NULL;
-		}
+			char* read_buf = barena_memalign(&ctx->analyzer->arena, stat.size, _Alignof(char));
+			if (bio_fread_exactly(fd, read_buf, stat.size, &error) != stat.size) {
+				BIO_ERROR("Error while reading %s: " BIO_ERROR_FMT, full_path, BIO_ERROR_FMT_ARGS(&error));
+				bio_fclose(fd, NULL);
+				return NULL;
+			}
 
-		file = (buxn_asm_file_t){
-			.content = {
-				.chars = content,
+			content = (buxn_ls_str_t){
+				.chars = read_buf,
 				.len = stat.size,
-			},
-			.in_use = true,
-		};
-		bio_fclose(fd, NULL);
+			};
+			bio_fclose(fd, NULL);
+		}
+		bhash_put(&analyzer->files, filename, content);
 	}
 
-	bhash_alloc_result_t alloc_result = bhash_alloc(&analyzer->files, filename);
-	if (alloc_result.is_new) {
-		analyzer->files.keys[alloc_result.index] = filename;
-		analyzer->files.values[alloc_result.index] = file;
-		return &analyzer->files.values[alloc_result.index];
-	} else {
-		buxn_asm_file_t* new_instance = barena_memalign(
-			&analyzer->arena,
-			sizeof(buxn_asm_file_t),
-			_Alignof(buxn_asm_file_t)
-		);
-		*new_instance = file;
-		return new_instance;
-	}
+	buxn_asm_file_t* file = buxn_ls_malloc(sizeof(buxn_asm_file_t));
+	*file = (buxn_asm_file_t){ .content = content };
+	return file;
 }
 
 void
 buxn_asm_fclose(buxn_asm_ctx_t* ctx, buxn_asm_file_t* file) {
 	(void)ctx;
-	file->in_use = false;
+	buxn_ls_free(file);
 }
 
 int
@@ -270,35 +252,33 @@ buxn_ls_analyze(buxn_ls_analyzer_t* analyzer, buxn_ls_workspace_t* workspace) {
 			bhash_index_t file_index = bhash_find(&analyzer->files, path);
 			if (!bhash_is_valid(file_index)) { continue; }
 
-			buxn_asm_file_t* file = &analyzer->files.values[file_index];
-			buxn_ls_str_t line = {
-				.chars = file->content.chars,
-			};
+			buxn_ls_str_t content = analyzer->files.values[file_index];
+			buxn_ls_str_t line = { .chars = content.chars, };
 			size_t start_index = 0;
-			for (size_t char_index = 0; char_index < file->content.len; ++char_index) {
-				char ch = file->content.chars[char_index];
+			for (size_t char_index = 0; char_index < content.len; ++char_index) {
+				char ch = content.chars[char_index];
 				if (ch == '\n') {
 					line.len = char_index - start_index;
 					barray_push(analyzer->lines, line, NULL);
-					line.chars = file->content.chars + char_index + 1;
+					line.chars = content.chars + char_index + 1;
 					start_index = char_index + 1;
 				} else if (ch == '\r') {
-					if (char_index < file->content.len - 1 && file->content.chars[char_index + 1] == '\n') {
+					if (char_index < content.len - 1 && content.chars[char_index + 1] == '\n') {
 						line.len = char_index - start_index;
 						barray_push(analyzer->lines, line, NULL);
-						line.chars = file->content.chars + char_index + 2;
+						line.chars = content.chars + char_index + 2;
 						start_index = char_index + 2;
 					} else {
 						line.len = char_index - start_index;
 						barray_push(analyzer->lines, line, NULL);
-						line.chars = file->content.chars + char_index + 1;
+						line.chars = content.chars + char_index + 1;
 						start_index = char_index + 1;
 					}
 				}
 			}
 			// Last line
-			if (start_index < file->content.len) {
-				line.len = file->content.len - start_index;
+			if (start_index < content.len) {
+				line.len = content.len - start_index;
 				barray_push(analyzer->lines, line, NULL);
 			}
 		}

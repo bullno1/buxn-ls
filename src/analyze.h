@@ -33,13 +33,12 @@ typedef struct {
 struct buxn_asm_file_s {
 	buxn_ls_str_t content;
 	size_t offset;
-	bool in_use;
 };
 
 typedef struct {
 	barena_t arena;
 	barray(buxn_ls_diagnostic_t) diagnostics;
-	BHASH_TABLE(const char*, struct buxn_asm_file_s) files;
+	BHASH_TABLE(const char*, buxn_ls_str_t) files;
 	barray(buxn_ls_str_t) lines;
 } buxn_ls_analyzer_t;
 
