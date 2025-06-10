@@ -87,8 +87,6 @@ buxn_ls_workspace_update(buxn_ls_workspace_t* workspace, const struct bio_lsp_in
 				doc->chars = NULL;
 			}
 			doc->len = content_size;
-
-			workspace->last_updated_doc = alloc_result.index;
 		} else if (strcmp(msg->method, "textDocument/didChange") == 0) {
 			// TODO: support incremental sync
 			const char* content = NULL;
@@ -122,8 +120,6 @@ buxn_ls_workspace_update(buxn_ls_workspace_t* workspace, const struct bio_lsp_in
 				doc->chars= NULL;
 			}
 			doc->len = content_size;
-
-			workspace->last_updated_doc = index;
 		} else if (strcmp(msg->method, "textDocument/didClose") == 0) {
 			BIO_INFO("Closing %s", path);
 
@@ -134,8 +130,6 @@ buxn_ls_workspace_update(buxn_ls_workspace_t* workspace, const struct bio_lsp_in
 			} else {
 				BIO_WARN("Document was not opened");
 			}
-
-			workspace->last_updated_doc = -1;
 		} else {
 			BIO_WARN("Dropped notification: %s", msg->method);
 		}

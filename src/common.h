@@ -4,6 +4,7 @@
 #include <bio/bio.h>
 #include <string.h>
 #include <bhash.h>
+#include <barena.h>
 
 typedef int (*bio_entry_fn_t)(void* userdata);
 
@@ -32,6 +33,14 @@ static inline char*
 buxn_ls_strcpy(const char* str) {
 	size_t len = strlen(str);
 	char* copy = buxn_ls_malloc(len + 1);
+	memcpy(copy, str, len + 1);
+	return copy;
+}
+
+static inline char*
+buxn_ls_arena_strcpy(barena_t* arena, const char* str) {
+	size_t len = strlen(str);
+	char* copy = barena_memalign(arena, len + 1, _Alignof(char));
 	memcpy(copy, str, len + 1);
 	return copy;
 }

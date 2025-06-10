@@ -8,6 +8,7 @@
 #include <utf8proc.h>
 
 struct buxn_asm_ctx_s {
+	buxn_ls_node_t* entry_node;
 	buxn_ls_analyzer_t* analyzer;
 	buxn_ls_workspace_t* workspace;
 };
@@ -72,9 +73,72 @@ buxn_ls_convert_position(buxn_ls_analyzer_t* analyzer, bio_lsp_position_t* pos) 
 	pos->character = code_unit_offset;
 }
 
+static buxn_ls_node_t*
+buxn_ls_alloc_node(buxn_ls_analyzer_t* analyzer, const char* filename) {
+	buxn_ls_node_t* node = barena_memalign(
+		analyzer->current_arena,
+		sizeof(buxn_ls_node_t),
+		_Alignof(buxn_ls_node_t)
+	);
+	*node = (buxn_ls_node_t){
+		.filename = buxn_ls_arena_strcpy(analyzer->current_arena, filename),
+	};
+	return node;
+}
+
+static void
+buxn_ls_do_queue_file(buxn_ls_analyzer_t* analyzer, const char* filename) {
+	buxn_ls_node_t* node = buxn_ls_alloc_node(analyzer, filename);
+	bhash_put(analyzer->current_dep_graph, node->filename, node);
+	barray_push(analyzer->analyze_queue, node, NULL);
+}
+
+static void
+buxn_ls_maybe_queue_node(
+	buxn_ls_analyzer_t* analyzer,
+	buxn_ls_workspace_t* workspace,
+	buxn_ls_node_t* node
+) {
+	bhash_index_t node_index = bhash_find(analyzer->current_dep_graph, node->filename);
+	if (bhash_is_valid(node_index)) { return; }  // Already visited
+
+	bhash_index_t doc_index = bhash_find(&workspace->docs, (char*){ (char*)node->filename });
+	if (bhash_is_valid(doc_index)) {  // The document is opened
+		buxn_ls_do_queue_file(analyzer, node->filename);
+	}
+
+	// Queue all children
+	for (
+		buxn_ls_edge_t* edge = node->out_edges;
+		edge != NULL;
+		edge = edge->next_out
+	) {
+		buxn_ls_maybe_queue_node(analyzer, workspace, edge->to);
+	}
+}
+
+static void
+buxn_ls_queue_from_root(
+	buxn_ls_analyzer_t* analyzer,
+	buxn_ls_workspace_t* workspace,
+	buxn_ls_node_t* node
+) {
+	if (node->in_edges != NULL) {
+		for (
+			buxn_ls_edge_t* edge = node->in_edges;
+			edge != NULL;
+			edge = edge->next_in
+		) {
+			buxn_ls_queue_from_root(analyzer, workspace, edge->from);
+		}
+	} else {
+		buxn_ls_maybe_queue_node(analyzer, workspace, node);
+	}
+}
+
 void*
 buxn_asm_alloc(buxn_asm_ctx_t* ctx, size_t size, size_t alignment) {
-	return barena_memalign(&ctx->analyzer->arena, size, alignment);
+	return barena_memalign(ctx->analyzer->current_arena, size, alignment);
 }
 
 void
@@ -155,7 +219,7 @@ buxn_asm_fopen(buxn_asm_ctx_t* ctx, const char* filename) {
 				return NULL;
 			}
 
-			char* read_buf = barena_memalign(&ctx->analyzer->arena, stat.size, _Alignof(char));
+			char* read_buf = barena_memalign(ctx->analyzer->current_arena, stat.size, _Alignof(char));
 			if (bio_fread_exactly(fd, read_buf, stat.size, &error) != stat.size) {
 				BIO_ERROR("Error while reading %s: " BIO_ERROR_FMT, full_path, BIO_ERROR_FMT_ARGS(&error));
 				bio_fclose(fd, NULL);
@@ -173,6 +237,33 @@ buxn_asm_fopen(buxn_asm_ctx_t* ctx, const char* filename) {
 
 	buxn_asm_file_t* file = buxn_ls_malloc(sizeof(buxn_asm_file_t));
 	*file = (buxn_asm_file_t){ .content = content };
+
+	bhash_alloc_result_t alloc_result = bhash_alloc(analyzer->current_dep_graph, filename);
+	buxn_ls_node_t* node;
+	if (alloc_result.is_new) {
+		node = buxn_ls_alloc_node(analyzer, filename);
+		analyzer->current_dep_graph->keys[alloc_result.index] = node->filename;
+		analyzer->current_dep_graph->values[alloc_result.index] = node;
+	} else {
+		node = analyzer->current_dep_graph->values[alloc_result.index];
+	}
+	node->analyzed = true;
+
+	if (node != ctx->entry_node) {
+		buxn_ls_edge_t* edge = barena_memalign(
+			analyzer->current_arena,
+			sizeof(buxn_ls_edge_t), _Alignof(buxn_ls_edge_t)
+		);
+
+		edge->from = ctx->entry_node;
+		edge->to = node;
+
+		edge->next_out = ctx->entry_node->out_edges;
+		ctx->entry_node->out_edges = edge;
+		edge->next_in = node->in_edges;
+		node->in_edges = edge;
+	}
+
 	return file;
 }
 
@@ -193,30 +284,91 @@ buxn_asm_fgetc(buxn_asm_ctx_t* ctx, buxn_asm_file_t* file) {
 
 void
 buxn_ls_analyzer_init(buxn_ls_analyzer_t* analyzer, barena_pool_t* pool) {
-	barena_init(&analyzer->arena, pool);
-	bhash_init(&analyzer->files, bhash_config_default());
+	barena_init(&analyzer->arena_a, pool);
+	barena_init(&analyzer->arena_b, pool);
+	analyzer->current_arena = &analyzer->arena_a;
+	analyzer->previous_arena = &analyzer->arena_b;
+
+	bhash_config_t hash_config = bhash_config_default();
+	hash_config.eq = buxn_ls_str_eq;
+	hash_config.hash = buxn_ls_str_hash;
+	bhash_init(&analyzer->files, hash_config);
+	bhash_init(&analyzer->dep_graph_a, hash_config);
+	bhash_init(&analyzer->dep_graph_b, hash_config);
+	analyzer->current_dep_graph = &analyzer->dep_graph_a;
+	analyzer->previous_dep_graph = &analyzer->dep_graph_b;
 }
 
 void
 buxn_ls_analyzer_cleanup(buxn_ls_analyzer_t* analyzer) {
 	barray_free(NULL, analyzer->diagnostics);
 	barray_free(NULL, analyzer->lines);
+	barray_free(NULL, analyzer->analyze_queue);
+
 	bhash_cleanup(&analyzer->files);
-	barena_reset(&analyzer->arena);
+	bhash_cleanup(&analyzer->dep_graph_a);
+	bhash_cleanup(&analyzer->dep_graph_b);
+
+	barena_reset(&analyzer->arena_a);
+	barena_reset(&analyzer->arena_b);
 }
 
 void
 buxn_ls_analyze(buxn_ls_analyzer_t* analyzer, buxn_ls_workspace_t* workspace) {
-	if (!bhash_is_valid(workspace->last_updated_doc)) { return; }
+	{
+		barena_reset(analyzer->previous_arena);
+		barena_t* tmp = analyzer->current_arena;
+		analyzer->current_arena = analyzer->previous_arena;
+		analyzer->previous_arena = tmp;
+	}
+	{
+		bhash_clear(analyzer->previous_dep_graph);
+		buxn_ls_dep_graph_t* tmp = analyzer->current_dep_graph;
+		analyzer->current_dep_graph = analyzer->previous_dep_graph;
+		analyzer->previous_dep_graph = tmp;
+	}
+	barray_clear(analyzer->analyze_queue);
 
-	barena_reset(&analyzer->arena);
+	// Based on dependency of files in the previous run, try to figure out in
+	// what order the files should be compiled.
+	bhash_index_t num_docs = bhash_len(&workspace->docs);
+	for (bhash_index_t doc_index = 0 ; doc_index < num_docs; ++doc_index) {
+		const char* filename = workspace->docs.keys[doc_index];
+		bhash_index_t current_node_index = bhash_find(analyzer->current_dep_graph, filename);
+		if (bhash_is_valid(current_node_index)) {  // File is already added
+			continue;
+		}
+
+		bhash_index_t previous_node_index = bhash_find(analyzer->previous_dep_graph, filename);
+		if (bhash_is_valid(previous_node_index)) {  // We saw this file before
+			buxn_ls_queue_from_root(
+				analyzer,
+				workspace,
+				analyzer->previous_dep_graph->values[previous_node_index]
+			);
+		} else {  // This was never seen before
+			buxn_ls_do_queue_file(analyzer, filename);
+		}
+	}
+
+	// Analyze files in order
 	barray_clear(analyzer->diagnostics);
 	bhash_clear(&analyzer->files);
-	buxn_asm_ctx_t ctx = {
-		.analyzer = analyzer,
-		.workspace = workspace,
-	};
-	buxn_asm(&ctx, workspace->docs.keys[workspace->last_updated_doc]);
+	for (size_t i = 0; i < barray_len(analyzer->analyze_queue); ++i) {
+		buxn_ls_node_t* node = analyzer->analyze_queue[i];
+		if (!node->analyzed) {
+			BIO_INFO("Analyzing %s", node->filename);
+			buxn_asm_ctx_t ctx = {
+				.entry_node = node,
+				.analyzer = analyzer,
+				.workspace = workspace,
+			};
+
+			buxn_asm(&ctx, node->filename);
+		} else {
+			BIO_INFO("Skipping %s", node->filename);
+		}
+	}
 
 	// Coalesce reports into LSP diagnostic
 	size_t num_diags = barray_len(analyzer->diagnostics);
@@ -238,7 +390,7 @@ buxn_ls_analyze(buxn_ls_analyzer_t* analyzer, buxn_ls_workspace_t* workspace) {
 		} else {
 			const char* path = diag->location.uri;
 			size_t uri_len = strlen(path) + workspace->root_dir_len + sizeof("file://");
-			doc_uri = barena_memalign(&analyzer->arena, uri_len, _Alignof(char));
+			doc_uri = barena_memalign(analyzer->current_arena, uri_len, _Alignof(char));
 			snprintf(doc_uri, uri_len, "file://%s%s", workspace->root_dir, path);
 			diag->location.uri = doc_uri;
 			previous_filename = path;

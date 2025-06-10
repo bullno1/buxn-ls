@@ -10,7 +10,6 @@ typedef struct buxn_ls_workspace_s {
 	char* root_dir;
 	size_t root_dir_len;
 	BHASH_TABLE(char*, buxn_ls_str_t) docs;
-	bhash_index_t last_updated_doc;
 } buxn_ls_workspace_t;
 
 void
