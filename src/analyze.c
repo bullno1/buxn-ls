@@ -15,11 +15,6 @@ struct buxn_asm_ctx_s {
 	buxn_ls_workspace_t* workspace;
 };
 
-typedef struct {
-	buxn_ls_str_t* lines;
-	int num_lines;
-} buxn_ls_line_slice_t;
-
 static bio_lsp_location_t
 buxn_source_region_to_lsp_location(const buxn_asm_source_region_t* region) {
 	return (bio_lsp_location_t){
@@ -44,7 +39,7 @@ buxn_ls_cmp_diagnostic(const void* lhs, const void* rhs) {
 	return strcmp(dlhs->location.uri, drhs->location.uri);
 }
 
-static buxn_ls_line_slice_t
+buxn_ls_line_slice_t
 buxn_ls_split_file(buxn_ls_analyzer_t* analyzer, const char* filename) {
 	bhash_index_t file_index = bhash_find(&analyzer->files, filename);
 	if (!bhash_is_valid(file_index)) {  // Invalid file

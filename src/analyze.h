@@ -75,6 +75,11 @@ typedef struct {
 } buxn_ls_file_t;
 
 typedef struct {
+	buxn_ls_str_t* lines;
+	int num_lines;
+} buxn_ls_line_slice_t;
+
+typedef struct {
 	buxn_ls_analyzer_ctx_t ctx_a;
 	buxn_ls_analyzer_ctx_t ctx_b;
 	buxn_ls_analyzer_ctx_t* current_ctx;
@@ -98,5 +103,8 @@ buxn_ls_analyzer_cleanup(buxn_ls_analyzer_t* analyzer);
 
 void
 buxn_ls_analyze(buxn_ls_analyzer_t* analyzer, struct buxn_ls_workspace_s* workspace);
+
+buxn_ls_line_slice_t
+buxn_ls_split_file(buxn_ls_analyzer_t* analyzer, const char* filename);
 
 #endif

@@ -19,6 +19,7 @@ typedef struct {
 	yyjson_alc json_allocator;
 	char name_buf[sizeof("ls:2147483647")];
 	buxn_ls_workspace_t workspace;
+	barena_t request_arena;
 
 	bio_timer_t analyze_delay_timer;
 	buxn_ls_analyzer_t analyzer;
@@ -89,6 +90,7 @@ buxn_ls_initialize(
 	bio_set_coro_name(ctx->name_buf);
 	BIO_INFO("Initializing");
 
+	barena_init(&ctx->request_arena, pool);
 	buxn_ls_analyzer_init(&ctx->analyzer, pool);
 
 	bhash_config_t hash_config = bhash_config_default();
@@ -190,6 +192,7 @@ buxn_ls_cleanup(buxn_ls_ctx_t* ctx) {
 	bhash_cleanup(&ctx->diag_file_set_b);
 	buxn_ls_workspace_cleanup(&ctx->workspace);
 	buxn_ls_analyzer_cleanup(&ctx->analyzer);
+	barena_reset(&ctx->request_arena);
 }
 
 static void
@@ -314,61 +317,90 @@ buxn_ls_analyze_workspace(void* userdata) {
 	ctx->currently_diagnosed_files = tmp;
 }
 
+static buxn_ls_reference_t*
+buxn_ls_find_definition(buxn_ls_ctx_t* ctx, yyjson_val* text_document_position) {
+	const char* uri = yyjson_get_str(
+		BIO_LSP_JSON_GET_LIT(BIO_LSP_JSON_GET_LIT(text_document_position, "textDocument"), "uri")
+	);
+	if (uri == NULL) { return NULL; }
+
+	const char* path = buxn_ls_workspace_resolve_path(&ctx->workspace, (char*)uri);
+	if (path == NULL) { return NULL; }
+
+	bhash_index_t node_index = bhash_find(&ctx->analyzer.current_ctx->nodes, path);
+	if (!bhash_is_valid(node_index)) { return NULL; }
+
+	yyjson_val* position = BIO_LSP_JSON_GET_LIT(text_document_position, "position");
+	int line = yyjson_get_int(BIO_LSP_JSON_GET_LIT(position, "line"));
+	int character = yyjson_get_int(BIO_LSP_JSON_GET_LIT(position, "character"));
+
+	const buxn_ls_node_t* node = ctx->analyzer.current_ctx->nodes.values[node_index];
+	for (buxn_ls_reference_t* ref = node->references; ref != NULL; ref = ref->next) {
+		if (
+			(ref->range.start.line <= line && line <= ref->range.end.line)
+			&& (ref->range.start.character <= character && character < ref->range.end.character)
+		) {
+			return ref;
+		}
+	}
+
+	return NULL;
+}
+
 static void
 buxn_ls_handle_find_definition(
 	buxn_ls_ctx_t* ctx,
 	const bio_lsp_in_msg_t* request,
 	bio_lsp_out_msg_t* response
 ) {
-	const char* uri = yyjson_get_str(
-		BIO_LSP_JSON_GET_LIT(BIO_LSP_JSON_GET_LIT(request->value, "textDocument"), "uri")
-	);
-	if (uri == NULL) {
+	const buxn_ls_reference_t* ref = buxn_ls_find_definition(ctx, request->value);
+	if (ref != NULL) {
+		response->value = yyjson_mut_obj(response->doc);
+		yyjson_mut_obj_add_str(response->doc, response->value, "uri", ref->definition_location.uri);
+		yyjson_mut_val* range = yyjson_mut_obj_add_obj(response->doc, response->value, "range");
+		buxn_ls_serialize_lsp_range(response->doc, range, &ref->definition_location.range);
+	} else {
+		response->value = yyjson_mut_null(response->doc);
+	}
+}
+
+static void
+buxn_ls_handle_hover(
+	buxn_ls_ctx_t* ctx,
+	const bio_lsp_in_msg_t* request,
+	bio_lsp_out_msg_t* response
+) {
+	const buxn_ls_reference_t* ref = buxn_ls_find_definition(ctx, request->value);
+	if (ref == NULL) {
 		response->value = yyjson_mut_null(response->doc);
 		return;
 	}
-	yyjson_val* position = BIO_LSP_JSON_GET_LIT(request->value, "position");
-	int line = yyjson_get_int(BIO_LSP_JSON_GET_LIT(position, "line"));
-	int character = yyjson_get_int(BIO_LSP_JSON_GET_LIT(position, "character"));
-	BIO_DEBUG("Resolving goto definition: %s:%d:%d", uri, line, character);
 
-	const char* path = buxn_ls_workspace_resolve_path(&ctx->workspace, (char*)uri);
+	char* uri = buxn_ls_arena_strcpy(&ctx->request_arena, ref->definition_location.uri);
+	const char* path = buxn_ls_workspace_resolve_path(&ctx->workspace, uri);
 	if (path == NULL) {
 		response->value = yyjson_mut_null(response->doc);
 		return;
 	}
 
-	bhash_index_t node_index = bhash_find(&ctx->analyzer.current_ctx->nodes, path);
-	if (!bhash_is_valid(node_index)) {
+	buxn_ls_line_slice_t slice = buxn_ls_split_file(&ctx->analyzer, path);
+	if (ref->definition_location.range.start.line >= slice.num_lines) {
 		response->value = yyjson_mut_null(response->doc);
 		return;
 	}
 
-	const buxn_ls_node_t* node = ctx->analyzer.current_ctx->nodes.values[node_index];
-	for (
-		buxn_ls_reference_t* ref = node->references;
-		ref != NULL;
-		ref = ref->next
-	) {
-		if (
-			(ref->range.start.line <= line && line <= ref->range.end.line)
-			&& (ref->range.start.character <= character && character < ref->range.end.character)
-		) {
-			response->value = yyjson_mut_obj(response->doc);
-			yyjson_mut_obj_add_str(response->doc, response->value, "uri", ref->definition_location.uri);
-			yyjson_mut_val* range = yyjson_mut_obj_add_obj(response->doc, response->value, "range");
-			buxn_ls_serialize_lsp_range(response->doc, range, &ref->definition_location.range);
-			return;
-		}
-	}
-
-	response->value = yyjson_mut_null(response->doc);
+	buxn_ls_str_t line = slice.lines[ref->definition_location.range.start.line];
+	response->value = yyjson_mut_obj(response->doc);
+	yyjson_mut_obj_add_strn(response->doc, response->value, "contents", line.chars, line.len);
+	yyjson_mut_val* range = yyjson_mut_obj_add_obj(response->doc, response->value, "range");
+	buxn_ls_serialize_lsp_range(response->doc, range, &ref->range);
 }
 
 static void
 buxn_ls_handle_msg(buxn_ls_ctx_t* ctx, const bio_lsp_in_msg_t* in_msg) {
 	switch (in_msg->type) {
 		case BIO_LSP_MSG_REQUEST:
+			barena_reset(&ctx->request_arena);
 			if (strcmp(in_msg->method, "shutdown") == 0) {
 				BIO_INFO("shutdown received");
 				bio_cancel_timer(ctx->analyze_delay_timer);
@@ -378,6 +410,10 @@ buxn_ls_handle_msg(buxn_ls_ctx_t* ctx, const bio_lsp_in_msg_t* in_msg) {
 			} else if (strcmp(in_msg->method, "textDocument/definition") == 0) {
 				bio_lsp_out_msg_t reply = buxn_ls_begin_msg(ctx, BIO_LSP_MSG_RESULT, in_msg);
 				buxn_ls_handle_find_definition(ctx, in_msg, &reply);
+				buxn_ls_end_msg(ctx, &reply);
+			} else if (strcmp(in_msg->method, "textDocument/hover") == 0) {
+				bio_lsp_out_msg_t reply = buxn_ls_begin_msg(ctx, BIO_LSP_MSG_RESULT, in_msg);
+				buxn_ls_handle_hover(ctx, in_msg, &reply);
 				buxn_ls_end_msg(ctx, &reply);
 			} else {
 				BIO_WARN("Client called an unimplemented method: %s", in_msg->method);

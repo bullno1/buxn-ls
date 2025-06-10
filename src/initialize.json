@@ -4,7 +4,8 @@
 			"openClose": true,
 			"change": 1
 		},
-		"definitionProvider": true
+		"definitionProvider": true,
+		"hoverProvider": true
 	},
 	"serverInfo": {
 		"name": "buxn-ls"
