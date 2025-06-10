@@ -44,7 +44,7 @@ void
 buxn_ls_workspace_cleanup(buxn_ls_workspace_t* workspace) {
 	for (bhash_index_t i = 0; i < bhash_len(&workspace->docs); ++i) {
 		buxn_ls_free(workspace->docs.keys[i]);
-		buxn_ls_free(workspace->docs.values[i].content);
+		buxn_ls_free((char*)workspace->docs.values[i].chars);
 	}
 	bhash_cleanup(&workspace->docs);
 	buxn_ls_free(workspace->root_dir);
@@ -70,23 +70,23 @@ buxn_ls_workspace_update(buxn_ls_workspace_t* workspace, const struct bio_lsp_in
 			BIO_INFO("Registering %s", path);
 
 			bhash_alloc_result_t alloc_result = bhash_alloc(&workspace->docs, path);
-			buxn_ls_doc_t* doc;
+			buxn_ls_str_t* doc;
 			if (alloc_result.is_new) {
 				workspace->docs.keys[alloc_result.index] = buxn_ls_strcpy(path);
 				doc = &workspace->docs.values[alloc_result.index];
 			} else {
 				BIO_WARN("Document is already opened");
 				doc = &workspace->docs.values[alloc_result.index];
-				buxn_ls_free(doc->content);
+				buxn_ls_free((char*)doc->chars);
 			}
 
 			if (content_size > 0) {
-				doc->content = buxn_ls_malloc(content_size);
-				memcpy(doc->content, content, content_size);
+				doc->chars = buxn_ls_malloc(content_size);
+				memcpy((char*)doc->chars, content, content_size);
 			} else {
-				doc->content= NULL;
+				doc->chars = NULL;
 			}
-			doc->size = content_size;
+			doc->len = content_size;
 
 			workspace->last_updated_doc = alloc_result.index;
 		} else if (strcmp(msg->method, "textDocument/didChange") == 0) {
@@ -104,10 +104,10 @@ buxn_ls_workspace_update(buxn_ls_workspace_t* workspace, const struct bio_lsp_in
 			BIO_INFO("Updating %s", path);
 
 			bhash_index_t index = bhash_find(&workspace->docs, path);
-			buxn_ls_doc_t* doc;
+			buxn_ls_str_t* doc;
 			if (bhash_is_valid(index)) {
 				doc = &workspace->docs.values[index];
-				buxn_ls_free(doc->content);
+				buxn_ls_free((char*)doc->chars);
 			} else {
 				BIO_WARN("Document was not opened");
 				index = bhash_alloc(&workspace->docs, path).index;
@@ -116,12 +116,12 @@ buxn_ls_workspace_update(buxn_ls_workspace_t* workspace, const struct bio_lsp_in
 			}
 
 			if (content_size > 0) {
-				doc->content = buxn_ls_malloc(content_size);
-				memcpy(doc->content, content, content_size);
+				doc->chars = buxn_ls_malloc(content_size);
+				memcpy((char*)doc->chars, content, content_size);
 			} else {
-				doc->content= NULL;
+				doc->chars= NULL;
 			}
-			doc->size = content_size;
+			doc->len = content_size;
 
 			workspace->last_updated_doc = index;
 		} else if (strcmp(msg->method, "textDocument/didClose") == 0) {
@@ -130,7 +130,7 @@ buxn_ls_workspace_update(buxn_ls_workspace_t* workspace, const struct bio_lsp_in
 			bhash_index_t index = bhash_remove(&workspace->docs, path);
 			if (bhash_is_valid(index)) {
 				buxn_ls_free(workspace->docs.keys[index]);
-				buxn_ls_free(workspace->docs.values[index].content);
+				buxn_ls_free((char*)workspace->docs.values[index].chars);
 			} else {
 				BIO_WARN("Document was not opened");
 			}

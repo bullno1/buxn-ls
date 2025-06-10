@@ -5,6 +5,7 @@
 #include <barray.h>
 #include <bhash.h>
 #include "lsp.h"
+#include "common.h"
 
 struct buxn_ls_workspace_s;
 
@@ -24,11 +25,6 @@ typedef struct {
 	const char* message;
 	const char* related_message;
 } buxn_ls_diagnostic_t;
-
-typedef struct {
-	const char* chars;
-	size_t len;
-} buxn_ls_str_t;
 
 struct buxn_asm_file_s {
 	buxn_ls_str_t content;

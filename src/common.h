@@ -7,6 +7,11 @@
 
 typedef int (*bio_entry_fn_t)(void* userdata);
 
+typedef struct {
+	const char* chars;
+	size_t len;
+} buxn_ls_str_t;
+
 int
 bio_enter(bio_entry_fn_t entry, void* userdata);
 

@@ -2,18 +2,14 @@
 #define BUXN_LS_WORKSPACE_H
 
 #include <bhash.h>
+#include "common.h"
 
 struct bio_lsp_in_msg_s;
-
-typedef struct {
-	char* content;
-	size_t size;
-} buxn_ls_doc_t;
 
 typedef struct buxn_ls_workspace_s {
 	char* root_dir;
 	size_t root_dir_len;
-	BHASH_TABLE(char*, buxn_ls_doc_t) docs;
+	BHASH_TABLE(char*, buxn_ls_str_t) docs;
 	bhash_index_t last_updated_doc;
 } buxn_ls_workspace_t;
 

@@ -137,10 +137,7 @@ buxn_asm_fopen(buxn_asm_ctx_t* ctx, const char* filename) {
 	} else {  // New file
 		bhash_index_t doc_index = bhash_find(&ctx->workspace->docs, (char*){ (char*)filename });
 		if (bhash_is_valid(doc_index)) {  // File is managed
-			content = (buxn_ls_str_t){
-				.chars = ctx->workspace->docs.values[doc_index].content,
-				.len = ctx->workspace->docs.values[doc_index].size,
-			};
+			content = ctx->workspace->docs.values[doc_index];
 		} else {  // File is unmanaged
 			bio_file_t fd;
 			bio_error_t error = { 0 };
