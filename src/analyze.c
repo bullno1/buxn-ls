@@ -235,6 +235,23 @@ buxn_ls_cleanup_analyzer_ctx(buxn_ls_analyzer_ctx_t* ctx) {
 	barena_reset(&ctx->arena);
 }
 
+static const char*
+buxn_ls_path_to_uri(buxn_ls_analyzer_t* analyzer, buxn_ls_workspace_t* workspace, const char* path) {
+	bhash_alloc_result_t alloc_result = bhash_alloc(&analyzer->path_to_uri, path);
+	if (alloc_result.is_new) {
+		size_t uri_len = strlen(path) + workspace->root_dir_len + sizeof("file://");
+		char* uri = barena_memalign(&analyzer->current_ctx->arena, uri_len, _Alignof(char));
+		snprintf(uri, uri_len, "file://%s%s", workspace->root_dir, path);
+
+		analyzer->path_to_uri.keys[alloc_result.index] = uri + sizeof("file://") - 1 + workspace->root_dir_len;
+		analyzer->path_to_uri.values[alloc_result.index] = uri;
+
+		return uri;
+	} else {
+		return analyzer->path_to_uri.values[alloc_result.index];
+	}
+}
+
 void
 buxn_ls_analyzer_init(buxn_ls_analyzer_t* analyzer, barena_pool_t* pool) {
 	buxn_ls_init_analyzer_ctx(&analyzer->ctx_a, pool);
@@ -247,6 +264,7 @@ buxn_ls_analyzer_init(buxn_ls_analyzer_t* analyzer, barena_pool_t* pool) {
 	hash_config.hash = buxn_ls_str_hash;
 	bhash_init(&analyzer->file_contents, hash_config);
 	bhash_init(&analyzer->file_lines, hash_config);
+	bhash_init(&analyzer->path_to_uri, hash_config);
 }
 
 void
@@ -255,6 +273,7 @@ buxn_ls_analyzer_cleanup(buxn_ls_analyzer_t* analyzer) {
 	barray_free(NULL, analyzer->lines);
 	barray_free(NULL, analyzer->analyze_queue);
 
+	bhash_cleanup(&analyzer->path_to_uri);
 	bhash_cleanup(&analyzer->file_lines);
 	bhash_cleanup(&analyzer->file_contents);
 	buxn_ls_cleanup_analyzer_ctx(&analyzer->ctx_a);
@@ -324,7 +343,7 @@ buxn_ls_analyze(buxn_ls_analyzer_t* analyzer, buxn_ls_workspace_t* workspace) {
 	);
 
 	const char* current_filename = NULL;
-	char* doc_uri = NULL;
+	const char* doc_uri = NULL;
 	for (size_t diag_index = 0; diag_index < num_diags; ++diag_index) {
 		buxn_ls_diagnostic_t* diag = &analyzer->diagnostics[diag_index];
 
@@ -333,10 +352,7 @@ buxn_ls_analyze(buxn_ls_analyzer_t* analyzer, buxn_ls_workspace_t* workspace) {
 			diag->related_location.uri = doc_uri;
 		} else {
 			const char* path = diag->location.uri;
-			size_t uri_len = strlen(path) + workspace->root_dir_len + sizeof("file://");
-			doc_uri = barena_memalign(&analyzer->current_ctx->arena, uri_len, _Alignof(char));
-			snprintf(doc_uri, uri_len, "file://%s%s", workspace->root_dir, path);
-			diag->location.uri = doc_uri;
+			doc_uri = diag->location.uri = buxn_ls_path_to_uri(analyzer, workspace, path);
 			current_filename = path;
 		}
 

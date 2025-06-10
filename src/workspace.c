@@ -4,7 +4,7 @@
 #include <yyjson.h>
 #include <yuarel.h>
 
-static char*
+char*
 buxn_ls_workspace_resolve_path(buxn_ls_workspace_t* workspace, char* uri) {
 	struct yuarel url;
 	if (yuarel_parse(&url, uri) != 0) {

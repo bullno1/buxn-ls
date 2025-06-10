@@ -72,6 +72,11 @@ typedef struct {
 	BHASH_TABLE(const char*, buxn_ls_file_lines_t) file_lines;
 	barray(buxn_ls_str_t) lines;
 	barray(buxn_ls_node_t*) analyze_queue;
+
+	BHASH_TABLE(const char*, const char*) path_to_uri;
+	barray(buxn_asm_sym_t) macro_definitions;
+	barray(buxn_asm_sym_t) label_definitions;
+	barray(buxn_asm_sym_t) references;
 } buxn_ls_analyzer_t;
 
 void

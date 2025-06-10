@@ -21,4 +21,7 @@ buxn_ls_workspace_cleanup(buxn_ls_workspace_t* workspace);
 void
 buxn_ls_workspace_update(buxn_ls_workspace_t* workspace, const struct bio_lsp_in_msg_s* msg);
 
+char*
+buxn_ls_workspace_resolve_path(buxn_ls_workspace_t* workspace, char* uri);
+
 #endif
