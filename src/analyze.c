@@ -5,6 +5,7 @@
 #include <bio/file.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <assert.h>
 #include <utf8proc.h>
 
 struct buxn_asm_ctx_s {
@@ -44,51 +45,48 @@ buxn_ls_cmp_diagnostic(const void* lhs, const void* rhs) {
 
 static buxn_ls_line_slice_t
 buxn_ls_split_file(buxn_ls_analyzer_t* analyzer, const char* filename) {
-	bhash_index_t line_info_index = bhash_find(&analyzer->file_lines, filename);
-	if (bhash_is_valid(line_info_index)) {  // Already split
-		buxn_ls_file_lines_t lines = analyzer->file_lines.values[line_info_index];
-		return (buxn_ls_line_slice_t){
-			.lines = &analyzer->lines[lines.first_line_index],
-			.num_lines = lines.num_lines,
-		};
-	}
-
-	BIO_DEBUG("Splitting file %s", filename);
-
-	bhash_index_t file_index = bhash_find(&analyzer->file_contents, filename);
+	bhash_index_t file_index = bhash_find(&analyzer->files, filename);
 	if (!bhash_is_valid(file_index)) {  // Invalid file
 		return (buxn_ls_line_slice_t){
 			.lines = NULL,
 			.num_lines = 0,
 		};
 	}
-	filename = analyzer->file_contents.keys[file_index];  // Use stable storage
 
-	buxn_ls_str_t content = analyzer->file_contents.values[file_index];
+	buxn_ls_file_t* file = &analyzer->files.values[file_index];
+	if (file->first_line_index >= 0) {
+		return (buxn_ls_line_slice_t){
+			.lines = &analyzer->lines[file->first_line_index],
+			.num_lines = file->num_lines,
+		};
+	}
+
+	BIO_DEBUG("Splitting file %s", filename);
+
+	buxn_ls_str_t content = analyzer->files.values[file_index].content;
 	buxn_ls_str_t line = { .chars = content.chars, };
-	buxn_ls_file_lines_t line_info = {
-		.first_line_index = (int)barray_len(analyzer->lines),
-	};
+	int first_line_index = (int)barray_len(analyzer->lines);
+	int num_lines = 0;
 	size_t start_index = 0;
 	for (size_t char_index = 0; char_index < content.len; ++char_index) {
 		char ch = content.chars[char_index];
 		if (ch == '\n') {
 			line.len = char_index - start_index;
 			barray_push(analyzer->lines, line, NULL);
-			++line_info.num_lines;
+			++num_lines;
 			line.chars = content.chars + char_index + 1;
 			start_index = char_index + 1;
 		} else if (ch == '\r') {
 			if (char_index < content.len - 1 && content.chars[char_index + 1] == '\n') {
 				line.len = char_index - start_index;
 				barray_push(analyzer->lines, line, NULL);
-				++line_info.num_lines;
+				++num_lines;
 				line.chars = content.chars + char_index + 2;
 				start_index = char_index + 2;
 			} else {
 				line.len = char_index - start_index;
 				barray_push(analyzer->lines, line, NULL);
-				++line_info.num_lines;
+				++num_lines;
 				line.chars = content.chars + char_index + 1;
 				start_index = char_index + 1;
 			}
@@ -98,14 +96,15 @@ buxn_ls_split_file(buxn_ls_analyzer_t* analyzer, const char* filename) {
 	if (start_index < content.len) {
 		line.len = content.len - start_index;
 		barray_push(analyzer->lines, line, NULL);
-		++line_info.num_lines;
+		++num_lines;
 	}
 
-	bhash_put(&analyzer->file_lines, filename, line_info);
+	file->first_line_index = first_line_index;
+	file->num_lines = num_lines;
 
 	return (buxn_ls_line_slice_t){
-		.lines = &analyzer->lines[line_info.first_line_index],
-		.num_lines = line_info.num_lines,
+		.lines = &analyzer->lines[first_line_index],
+		.num_lines = num_lines,
 	};
 }
 
@@ -235,23 +234,6 @@ buxn_ls_cleanup_analyzer_ctx(buxn_ls_analyzer_ctx_t* ctx) {
 	barena_reset(&ctx->arena);
 }
 
-static const char*
-buxn_ls_path_to_uri(buxn_ls_analyzer_t* analyzer, buxn_ls_workspace_t* workspace, const char* path) {
-	bhash_alloc_result_t alloc_result = bhash_alloc(&analyzer->path_to_uri, path);
-	if (alloc_result.is_new) {
-		size_t uri_len = strlen(path) + workspace->root_dir_len + sizeof("file://");
-		char* uri = barena_memalign(&analyzer->current_ctx->arena, uri_len, _Alignof(char));
-		snprintf(uri, uri_len, "file://%s%s", workspace->root_dir, path);
-
-		analyzer->path_to_uri.keys[alloc_result.index] = uri + sizeof("file://") - 1 + workspace->root_dir_len;
-		analyzer->path_to_uri.values[alloc_result.index] = uri;
-
-		return uri;
-	} else {
-		return analyzer->path_to_uri.values[alloc_result.index];
-	}
-}
-
 void
 buxn_ls_analyzer_init(buxn_ls_analyzer_t* analyzer, barena_pool_t* pool) {
 	buxn_ls_init_analyzer_ctx(&analyzer->ctx_a, pool);
@@ -262,9 +244,7 @@ buxn_ls_analyzer_init(buxn_ls_analyzer_t* analyzer, barena_pool_t* pool) {
 	bhash_config_t hash_config = bhash_config_default();
 	hash_config.eq = buxn_ls_str_eq;
 	hash_config.hash = buxn_ls_str_hash;
-	bhash_init(&analyzer->file_contents, hash_config);
-	bhash_init(&analyzer->file_lines, hash_config);
-	bhash_init(&analyzer->path_to_uri, hash_config);
+	bhash_init(&analyzer->files, hash_config);
 }
 
 void
@@ -273,9 +253,7 @@ buxn_ls_analyzer_cleanup(buxn_ls_analyzer_t* analyzer) {
 	barray_free(NULL, analyzer->lines);
 	barray_free(NULL, analyzer->analyze_queue);
 
-	bhash_cleanup(&analyzer->path_to_uri);
-	bhash_cleanup(&analyzer->file_lines);
-	bhash_cleanup(&analyzer->file_contents);
+	bhash_cleanup(&analyzer->files);
 	buxn_ls_cleanup_analyzer_ctx(&analyzer->ctx_a);
 	buxn_ls_cleanup_analyzer_ctx(&analyzer->ctx_b);
 }
@@ -289,8 +267,6 @@ buxn_ls_analyze(buxn_ls_analyzer_t* analyzer, buxn_ls_workspace_t* workspace) {
 		analyzer->previous_ctx = tmp;
 	}
 	barray_clear(analyzer->analyze_queue);
-	barray_clear(analyzer->lines);
-	bhash_clear(&analyzer->file_lines);
 
 	// Based on dependency of files in the previous run, try to figure out in
 	// what order the files should be compiled.
@@ -315,8 +291,9 @@ buxn_ls_analyze(buxn_ls_analyzer_t* analyzer, buxn_ls_workspace_t* workspace) {
 	}
 
 	// Analyze files in order
+	barray_clear(analyzer->lines);
+	bhash_clear(&analyzer->files);
 	barray_clear(analyzer->diagnostics);
-	bhash_clear(&analyzer->file_contents);
 	for (size_t i = 0; i < barray_len(analyzer->analyze_queue); ++i) {
 		buxn_ls_node_t* node = analyzer->analyze_queue[i];
 		if (!node->analyzed) {
@@ -352,7 +329,21 @@ buxn_ls_analyze(buxn_ls_analyzer_t* analyzer, buxn_ls_workspace_t* workspace) {
 			diag->related_location.uri = doc_uri;
 		} else {
 			const char* path = diag->location.uri;
-			doc_uri = diag->location.uri = buxn_ls_path_to_uri(analyzer, workspace, path);
+
+			bhash_index_t file_index = bhash_find(&analyzer->files, path);
+			assert(bhash_is_valid(file_index) && "Diagnostic comes from unvisited file");
+
+			buxn_ls_file_t* file = &analyzer->files.values[file_index];
+			if (file->uri != NULL) {
+				doc_uri = diag->location.uri = file->uri;
+			} else {
+				size_t uri_len = strlen(path) + workspace->root_dir_len + sizeof("file://");
+				char* uri = barena_memalign(&analyzer->current_ctx->arena, uri_len, _Alignof(char));
+				// TODO: do we need to url encode?
+				snprintf(uri, uri_len, "file://%s%s", workspace->root_dir, path);
+
+				doc_uri = diag->location.uri = file->uri = uri;
+			}
 			current_filename = path;
 		}
 
@@ -423,10 +414,10 @@ buxn_asm_put_symbol(buxn_asm_ctx_t* ctx, uint16_t addr, const buxn_asm_sym_t* sy
 buxn_asm_file_t*
 buxn_asm_fopen(buxn_asm_ctx_t* ctx, const char* filename) {
 	buxn_ls_analyzer_t* analyzer = ctx->analyzer;
-	bhash_index_t file_index = bhash_find(&analyzer->file_contents, filename);
+	bhash_index_t file_index = bhash_find(&analyzer->files, filename);
 	buxn_ls_str_t content;
 	if (bhash_is_valid(file_index)) {  // File is already read
-		content = analyzer->file_contents.values[file_index];
+		content = analyzer->files.values[file_index].content;
 	} else {  // New file
 		bhash_index_t doc_index = bhash_find(&ctx->workspace->docs, (char*){ (char*)filename });
 		if (bhash_is_valid(doc_index)) {  // File is managed
@@ -461,7 +452,11 @@ buxn_asm_fopen(buxn_asm_ctx_t* ctx, const char* filename) {
 			};
 			bio_fclose(fd, NULL);
 		}
-		bhash_put(&analyzer->file_contents, filename, content);
+		buxn_ls_file_t file = {
+			.content = content,
+			.first_line_index = -1,
+		};
+		bhash_put(&analyzer->files, filename, file);
 	}
 
 	buxn_asm_file_t* file = buxn_ls_malloc(sizeof(buxn_asm_file_t));

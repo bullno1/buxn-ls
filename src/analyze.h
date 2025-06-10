@@ -4,6 +4,7 @@
 #include <barena.h>
 #include <barray.h>
 #include <bhash.h>
+#include <buxn/asm/asm.h>
 #include "lsp.h"
 #include "common.h"
 
@@ -44,12 +45,15 @@ struct buxn_ls_node_s {
 	buxn_ls_edge_t* out_edges;
 };
 
-typedef struct {
-	int first_line_index;
-	int num_lines;
-} buxn_ls_file_lines_t;
-
 typedef BHASH_TABLE(const char*, buxn_ls_node_t*) buxn_ls_dep_graph_t;
+
+typedef struct buxn_ls_reference_s buxn_ls_reference_t;
+struct buxn_ls_reference_s {
+	buxn_ls_reference_t* next;
+
+	bio_lsp_location_t definition_location;
+	bio_lsp_range_t range;
+};
 
 struct buxn_asm_file_s {
 	buxn_ls_str_t content;
@@ -62,21 +66,23 @@ typedef struct {
 } buxn_ls_analyzer_ctx_t;
 
 typedef struct {
+	const char* uri;
+	buxn_ls_str_t content;
+
+	int first_line_index;
+	int num_lines;
+} buxn_ls_file_t;
+
+typedef struct {
 	buxn_ls_analyzer_ctx_t ctx_a;
 	buxn_ls_analyzer_ctx_t ctx_b;
 	buxn_ls_analyzer_ctx_t* current_ctx;
 	buxn_ls_analyzer_ctx_t* previous_ctx;
 
 	barray(buxn_ls_diagnostic_t) diagnostics;
-	BHASH_TABLE(const char*, buxn_ls_str_t) file_contents;
-	BHASH_TABLE(const char*, buxn_ls_file_lines_t) file_lines;
+	BHASH_TABLE(const char*, buxn_ls_file_t) files;
 	barray(buxn_ls_str_t) lines;
 	barray(buxn_ls_node_t*) analyze_queue;
-
-	BHASH_TABLE(const char*, const char*) path_to_uri;
-	barray(buxn_asm_sym_t) macro_definitions;
-	barray(buxn_asm_sym_t) label_definitions;
-	barray(buxn_asm_sym_t) references;
 } buxn_ls_analyzer_t;
 
 void
