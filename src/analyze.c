@@ -13,6 +13,11 @@ struct buxn_asm_ctx_s {
 	buxn_ls_workspace_t* workspace;
 };
 
+typedef struct {
+	buxn_ls_str_t* lines;
+	int num_lines;
+} buxn_ls_line_slice_t;
+
 static bio_lsp_location_t
 buxn_source_region_to_lsp_location(const buxn_asm_source_region_t* region) {
 	return (bio_lsp_location_t){
@@ -37,27 +42,99 @@ buxn_ls_cmp_diagnostic(const void* lhs, const void* rhs) {
 	return strcmp(dlhs->location.uri, drhs->location.uri);
 }
 
+static buxn_ls_line_slice_t
+buxn_ls_split_file(buxn_ls_analyzer_t* analyzer, const char* filename) {
+	bhash_index_t line_info_index = bhash_find(&analyzer->file_lines, filename);
+	if (bhash_is_valid(line_info_index)) {  // Already split
+		buxn_ls_file_lines_t lines = analyzer->file_lines.values[line_info_index];
+		return (buxn_ls_line_slice_t){
+			.lines = &analyzer->lines[lines.first_line_index],
+			.num_lines = lines.num_lines,
+		};
+	}
+
+	BIO_DEBUG("Splitting file %s", filename);
+
+	bhash_index_t file_index = bhash_find(&analyzer->file_contents, filename);
+	if (!bhash_is_valid(file_index)) {  // Invalid file
+		return (buxn_ls_line_slice_t){
+			.lines = NULL,
+			.num_lines = 0,
+		};
+	}
+	filename = analyzer->file_contents.keys[file_index];  // Use stable storage
+
+	buxn_ls_str_t content = analyzer->file_contents.values[file_index];
+	buxn_ls_str_t line = { .chars = content.chars, };
+	buxn_ls_file_lines_t line_info = {
+		.first_line_index = (int)barray_len(analyzer->lines),
+	};
+	size_t start_index = 0;
+	for (size_t char_index = 0; char_index < content.len; ++char_index) {
+		char ch = content.chars[char_index];
+		if (ch == '\n') {
+			line.len = char_index - start_index;
+			barray_push(analyzer->lines, line, NULL);
+			++line_info.num_lines;
+			line.chars = content.chars + char_index + 1;
+			start_index = char_index + 1;
+		} else if (ch == '\r') {
+			if (char_index < content.len - 1 && content.chars[char_index + 1] == '\n') {
+				line.len = char_index - start_index;
+				barray_push(analyzer->lines, line, NULL);
+				++line_info.num_lines;
+				line.chars = content.chars + char_index + 2;
+				start_index = char_index + 2;
+			} else {
+				line.len = char_index - start_index;
+				barray_push(analyzer->lines, line, NULL);
+				++line_info.num_lines;
+				line.chars = content.chars + char_index + 1;
+				start_index = char_index + 1;
+			}
+		}
+	}
+	// Last line
+	if (start_index < content.len) {
+		line.len = content.len - start_index;
+		barray_push(analyzer->lines, line, NULL);
+		++line_info.num_lines;
+	}
+
+	bhash_put(&analyzer->file_lines, filename, line_info);
+
+	return (buxn_ls_line_slice_t){
+		.lines = &analyzer->lines[line_info.first_line_index],
+		.num_lines = line_info.num_lines,
+	};
+}
+
 static void
-buxn_ls_convert_position(buxn_ls_analyzer_t* analyzer, bio_lsp_position_t* pos) {
-	size_t num_lines = barray_len(analyzer->lines);
+buxn_ls_convert_position(
+	buxn_ls_analyzer_t* analyzer,
+	const char* filename,
+	bio_lsp_position_t* pos
+) {
+	buxn_ls_line_slice_t line_slice = buxn_ls_split_file(analyzer, filename);
+
 	pos->line -= 1;
-	if (pos->line >= (int)num_lines) {
-		pos->line = num_lines - 1;
+	if (pos->line >= line_slice.num_lines) {
+		pos->line = line_slice.num_lines - 1;
 		pos->character = 0;
 		return;
 	}
 
-	const buxn_ls_str_t* line = &analyzer->lines[pos->line];
+	buxn_ls_str_t line = line_slice.lines[pos->line];
 	int utf8_offset = pos->character - 1;
 	utf8proc_ssize_t byte_offset = 0;
-	utf8proc_ssize_t line_len = line->len;
+	utf8proc_ssize_t line_len = line.len;
 	int code_unit_offset = 0;
 	while (true) {
 		if (byte_offset >= utf8_offset || byte_offset >= line_len) { break; }
 
 		utf8proc_int32_t codepoint;
 		utf8proc_ssize_t num_bytes = utf8proc_iterate(
-			(const utf8proc_uint8_t*)line->chars + byte_offset,
+			(const utf8proc_uint8_t*)line.chars + byte_offset,
 			line_len - byte_offset,
 			&codepoint
 		);
@@ -169,6 +246,7 @@ buxn_ls_analyzer_init(buxn_ls_analyzer_t* analyzer, barena_pool_t* pool) {
 	hash_config.eq = buxn_ls_str_eq;
 	hash_config.hash = buxn_ls_str_hash;
 	bhash_init(&analyzer->file_contents, hash_config);
+	bhash_init(&analyzer->file_lines, hash_config);
 }
 
 void
@@ -177,6 +255,7 @@ buxn_ls_analyzer_cleanup(buxn_ls_analyzer_t* analyzer) {
 	barray_free(NULL, analyzer->lines);
 	barray_free(NULL, analyzer->analyze_queue);
 
+	bhash_cleanup(&analyzer->file_lines);
 	bhash_cleanup(&analyzer->file_contents);
 	buxn_ls_cleanup_analyzer_ctx(&analyzer->ctx_a);
 	buxn_ls_cleanup_analyzer_ctx(&analyzer->ctx_b);
@@ -191,6 +270,8 @@ buxn_ls_analyze(buxn_ls_analyzer_t* analyzer, buxn_ls_workspace_t* workspace) {
 		analyzer->previous_ctx = tmp;
 	}
 	barray_clear(analyzer->analyze_queue);
+	barray_clear(analyzer->lines);
+	bhash_clear(&analyzer->file_lines);
 
 	// Based on dependency of files in the previous run, try to figure out in
 	// what order the files should be compiled.
@@ -242,12 +323,12 @@ buxn_ls_analyze(buxn_ls_analyzer_t* analyzer, buxn_ls_workspace_t* workspace) {
 		buxn_ls_cmp_diagnostic
 	);
 
-	const char* previous_filename = NULL;
+	const char* current_filename = NULL;
 	char* doc_uri = NULL;
 	for (size_t diag_index = 0; diag_index < num_diags; ++diag_index) {
 		buxn_ls_diagnostic_t* diag = &analyzer->diagnostics[diag_index];
 
-		if (diag->location.uri == previous_filename) {
+		if (diag->location.uri == current_filename) {
 			diag->location.uri = doc_uri;
 			diag->related_location.uri = doc_uri;
 		} else {
@@ -256,50 +337,14 @@ buxn_ls_analyze(buxn_ls_analyzer_t* analyzer, buxn_ls_workspace_t* workspace) {
 			doc_uri = barena_memalign(&analyzer->current_ctx->arena, uri_len, _Alignof(char));
 			snprintf(doc_uri, uri_len, "file://%s%s", workspace->root_dir, path);
 			diag->location.uri = doc_uri;
-			previous_filename = path;
-
-			// Split file content into lines to convert into LSP questionable
-			// position format
-			barray_clear(analyzer->lines);
-			bhash_index_t file_index = bhash_find(&analyzer->file_contents, path);
-			if (!bhash_is_valid(file_index)) { continue; }
-
-			buxn_ls_str_t content = analyzer->file_contents.values[file_index];
-			buxn_ls_str_t line = { .chars = content.chars, };
-			size_t start_index = 0;
-			for (size_t char_index = 0; char_index < content.len; ++char_index) {
-				char ch = content.chars[char_index];
-				if (ch == '\n') {
-					line.len = char_index - start_index;
-					barray_push(analyzer->lines, line, NULL);
-					line.chars = content.chars + char_index + 1;
-					start_index = char_index + 1;
-				} else if (ch == '\r') {
-					if (char_index < content.len - 1 && content.chars[char_index + 1] == '\n') {
-						line.len = char_index - start_index;
-						barray_push(analyzer->lines, line, NULL);
-						line.chars = content.chars + char_index + 2;
-						start_index = char_index + 2;
-					} else {
-						line.len = char_index - start_index;
-						barray_push(analyzer->lines, line, NULL);
-						line.chars = content.chars + char_index + 1;
-						start_index = char_index + 1;
-					}
-				}
-			}
-			// Last line
-			if (start_index < content.len) {
-				line.len = content.len - start_index;
-				barray_push(analyzer->lines, line, NULL);
-			}
+			current_filename = path;
 		}
 
-		buxn_ls_convert_position(analyzer, &diag->location.range.start);
-		buxn_ls_convert_position(analyzer, &diag->location.range.end);
+		buxn_ls_convert_position(analyzer, current_filename, &diag->location.range.start);
+		buxn_ls_convert_position(analyzer, current_filename, &diag->location.range.end);
 		if (diag->related_message != NULL) {
-			buxn_ls_convert_position(analyzer, &diag->related_location.range.start);
-			buxn_ls_convert_position(analyzer, &diag->related_location.range.end);
+			buxn_ls_convert_position(analyzer, current_filename, &diag->related_location.range.start);
+			buxn_ls_convert_position(analyzer, current_filename, &diag->related_location.range.end);
 		}
 	}
 }
