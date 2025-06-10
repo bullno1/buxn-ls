@@ -44,6 +44,11 @@ struct buxn_ls_node_s {
 	buxn_ls_edge_t* out_edges;
 };
 
+typedef struct {
+	int first_line_index;
+	int num_lines;
+} buxn_ls_file_lines_t;
+
 typedef BHASH_TABLE(const char*, buxn_ls_node_t*) buxn_ls_dep_graph_t;
 
 struct buxn_asm_file_s {
@@ -52,20 +57,21 @@ struct buxn_asm_file_s {
 };
 
 typedef struct {
-	barena_t arena_a;
-	barena_t arena_b;
-	barena_t* current_arena;
-	barena_t* previous_arena;
+	barena_t arena;
+	buxn_ls_dep_graph_t dep_graph;
+} buxn_ls_analyzer_ctx_t;
 
-	buxn_ls_dep_graph_t dep_graph_a;
-	buxn_ls_dep_graph_t dep_graph_b;
-	buxn_ls_dep_graph_t* current_dep_graph;
-	buxn_ls_dep_graph_t* previous_dep_graph;
+typedef struct {
+	buxn_ls_analyzer_ctx_t ctx_a;
+	buxn_ls_analyzer_ctx_t ctx_b;
+	buxn_ls_analyzer_ctx_t* current_ctx;
+	buxn_ls_analyzer_ctx_t* previous_ctx;
 
 	barray(buxn_ls_diagnostic_t) diagnostics;
-	BHASH_TABLE(const char*, buxn_ls_str_t) files;
-	barray(buxn_ls_node_t*) analyze_queue;
+	BHASH_TABLE(const char*, buxn_ls_str_t) file_contents;
+	BHASH_TABLE(const char*, buxn_ls_file_lines_t) file_lines;
 	barray(buxn_ls_str_t) lines;
+	barray(buxn_ls_node_t*) analyze_queue;
 } buxn_ls_analyzer_t;
 
 void

@@ -76,12 +76,12 @@ buxn_ls_convert_position(buxn_ls_analyzer_t* analyzer, bio_lsp_position_t* pos) 
 static buxn_ls_node_t*
 buxn_ls_alloc_node(buxn_ls_analyzer_t* analyzer, const char* filename) {
 	buxn_ls_node_t* node = barena_memalign(
-		analyzer->current_arena,
+		&analyzer->current_ctx->arena,
 		sizeof(buxn_ls_node_t),
 		_Alignof(buxn_ls_node_t)
 	);
 	*node = (buxn_ls_node_t){
-		.filename = buxn_ls_arena_strcpy(analyzer->current_arena, filename),
+		.filename = buxn_ls_arena_strcpy(&analyzer->current_ctx->arena, filename),
 	};
 	return node;
 }
@@ -89,7 +89,7 @@ buxn_ls_alloc_node(buxn_ls_analyzer_t* analyzer, const char* filename) {
 static void
 buxn_ls_do_queue_file(buxn_ls_analyzer_t* analyzer, const char* filename) {
 	buxn_ls_node_t* node = buxn_ls_alloc_node(analyzer, filename);
-	bhash_put(analyzer->current_dep_graph, node->filename, node);
+	bhash_put(&analyzer->current_ctx->dep_graph, node->filename, node);
 	barray_push(analyzer->analyze_queue, node, NULL);
 }
 
@@ -99,7 +99,7 @@ buxn_ls_maybe_queue_node(
 	buxn_ls_workspace_t* workspace,
 	buxn_ls_node_t* node
 ) {
-	bhash_index_t node_index = bhash_find(analyzer->current_dep_graph, node->filename);
+	bhash_index_t node_index = bhash_find(&analyzer->current_ctx->dep_graph, node->filename);
 	if (bhash_is_valid(node_index)) { return; }  // Already visited
 
 	bhash_index_t doc_index = bhash_find(&workspace->docs, (char*){ (char*)node->filename });
@@ -136,9 +136,177 @@ buxn_ls_queue_from_root(
 	}
 }
 
+static void
+buxn_ls_init_analyzer_ctx(buxn_ls_analyzer_ctx_t* ctx, barena_pool_t* pool) {
+	barena_init(&ctx->arena, pool);
+
+	bhash_config_t hash_config = bhash_config_default();
+	hash_config.eq = buxn_ls_str_eq;
+	hash_config.hash = buxn_ls_str_hash;
+	bhash_init(&ctx->dep_graph, hash_config);
+}
+
+static void
+buxn_ls_reset_analyzer_ctx(buxn_ls_analyzer_ctx_t* ctx) {
+	barena_reset(&ctx->arena);
+	bhash_clear(&ctx->dep_graph);
+}
+
+static void
+buxn_ls_cleanup_analyzer_ctx(buxn_ls_analyzer_ctx_t* ctx) {
+	bhash_cleanup(&ctx->dep_graph);
+	barena_reset(&ctx->arena);
+}
+
+void
+buxn_ls_analyzer_init(buxn_ls_analyzer_t* analyzer, barena_pool_t* pool) {
+	buxn_ls_init_analyzer_ctx(&analyzer->ctx_a, pool);
+	buxn_ls_init_analyzer_ctx(&analyzer->ctx_b, pool);
+	analyzer->current_ctx = &analyzer->ctx_a;
+	analyzer->previous_ctx = &analyzer->ctx_b;
+
+	bhash_config_t hash_config = bhash_config_default();
+	hash_config.eq = buxn_ls_str_eq;
+	hash_config.hash = buxn_ls_str_hash;
+	bhash_init(&analyzer->file_contents, hash_config);
+}
+
+void
+buxn_ls_analyzer_cleanup(buxn_ls_analyzer_t* analyzer) {
+	barray_free(NULL, analyzer->diagnostics);
+	barray_free(NULL, analyzer->lines);
+	barray_free(NULL, analyzer->analyze_queue);
+
+	bhash_cleanup(&analyzer->file_contents);
+	buxn_ls_cleanup_analyzer_ctx(&analyzer->ctx_a);
+	buxn_ls_cleanup_analyzer_ctx(&analyzer->ctx_b);
+}
+
+void
+buxn_ls_analyze(buxn_ls_analyzer_t* analyzer, buxn_ls_workspace_t* workspace) {
+	{
+		buxn_ls_reset_analyzer_ctx(analyzer->previous_ctx);
+		buxn_ls_analyzer_ctx_t* tmp = analyzer->current_ctx;
+		analyzer->current_ctx = analyzer->previous_ctx;
+		analyzer->previous_ctx = tmp;
+	}
+	barray_clear(analyzer->analyze_queue);
+
+	// Based on dependency of files in the previous run, try to figure out in
+	// what order the files should be compiled.
+	bhash_index_t num_docs = bhash_len(&workspace->docs);
+	for (bhash_index_t doc_index = 0 ; doc_index < num_docs; ++doc_index) {
+		const char* filename = workspace->docs.keys[doc_index];
+		bhash_index_t current_node_index = bhash_find(&analyzer->current_ctx->dep_graph, filename);
+		if (bhash_is_valid(current_node_index)) {  // File is already added
+			continue;
+		}
+
+		bhash_index_t previous_node_index = bhash_find(&analyzer->previous_ctx->dep_graph, filename);
+		if (bhash_is_valid(previous_node_index)) {  // We saw this file before
+			buxn_ls_queue_from_root(
+				analyzer,
+				workspace,
+				analyzer->previous_ctx->dep_graph.values[previous_node_index]
+			);
+		} else {  // This was never seen before
+			buxn_ls_do_queue_file(analyzer, filename);
+		}
+	}
+
+	// Analyze files in order
+	barray_clear(analyzer->diagnostics);
+	bhash_clear(&analyzer->file_contents);
+	for (size_t i = 0; i < barray_len(analyzer->analyze_queue); ++i) {
+		buxn_ls_node_t* node = analyzer->analyze_queue[i];
+		if (!node->analyzed) {
+			BIO_INFO("Analyzing %s", node->filename);
+			buxn_asm_ctx_t ctx = {
+				.entry_node = node,
+				.analyzer = analyzer,
+				.workspace = workspace,
+			};
+
+			buxn_asm(&ctx, node->filename);
+		} else {
+			BIO_INFO("Skipping %s", node->filename);
+		}
+	}
+
+	// Coalesce reports into LSP diagnostic
+	size_t num_diags = barray_len(analyzer->diagnostics);
+	if (num_diags == 0) { return; }
+	qsort(
+		analyzer->diagnostics,
+		num_diags, sizeof(analyzer->diagnostics[0]),
+		buxn_ls_cmp_diagnostic
+	);
+
+	const char* previous_filename = NULL;
+	char* doc_uri = NULL;
+	for (size_t diag_index = 0; diag_index < num_diags; ++diag_index) {
+		buxn_ls_diagnostic_t* diag = &analyzer->diagnostics[diag_index];
+
+		if (diag->location.uri == previous_filename) {
+			diag->location.uri = doc_uri;
+			diag->related_location.uri = doc_uri;
+		} else {
+			const char* path = diag->location.uri;
+			size_t uri_len = strlen(path) + workspace->root_dir_len + sizeof("file://");
+			doc_uri = barena_memalign(&analyzer->current_ctx->arena, uri_len, _Alignof(char));
+			snprintf(doc_uri, uri_len, "file://%s%s", workspace->root_dir, path);
+			diag->location.uri = doc_uri;
+			previous_filename = path;
+
+			// Split file content into lines to convert into LSP questionable
+			// position format
+			barray_clear(analyzer->lines);
+			bhash_index_t file_index = bhash_find(&analyzer->file_contents, path);
+			if (!bhash_is_valid(file_index)) { continue; }
+
+			buxn_ls_str_t content = analyzer->file_contents.values[file_index];
+			buxn_ls_str_t line = { .chars = content.chars, };
+			size_t start_index = 0;
+			for (size_t char_index = 0; char_index < content.len; ++char_index) {
+				char ch = content.chars[char_index];
+				if (ch == '\n') {
+					line.len = char_index - start_index;
+					barray_push(analyzer->lines, line, NULL);
+					line.chars = content.chars + char_index + 1;
+					start_index = char_index + 1;
+				} else if (ch == '\r') {
+					if (char_index < content.len - 1 && content.chars[char_index + 1] == '\n') {
+						line.len = char_index - start_index;
+						barray_push(analyzer->lines, line, NULL);
+						line.chars = content.chars + char_index + 2;
+						start_index = char_index + 2;
+					} else {
+						line.len = char_index - start_index;
+						barray_push(analyzer->lines, line, NULL);
+						line.chars = content.chars + char_index + 1;
+						start_index = char_index + 1;
+					}
+				}
+			}
+			// Last line
+			if (start_index < content.len) {
+				line.len = content.len - start_index;
+				barray_push(analyzer->lines, line, NULL);
+			}
+		}
+
+		buxn_ls_convert_position(analyzer, &diag->location.range.start);
+		buxn_ls_convert_position(analyzer, &diag->location.range.end);
+		if (diag->related_message != NULL) {
+			buxn_ls_convert_position(analyzer, &diag->related_location.range.start);
+			buxn_ls_convert_position(analyzer, &diag->related_location.range.end);
+		}
+	}
+}
+
 void*
 buxn_asm_alloc(buxn_asm_ctx_t* ctx, size_t size, size_t alignment) {
-	return barena_memalign(ctx->analyzer->current_arena, size, alignment);
+	return barena_memalign(&ctx->analyzer->current_ctx->arena, size, alignment);
 }
 
 void
@@ -194,10 +362,10 @@ buxn_asm_put_symbol(buxn_asm_ctx_t* ctx, uint16_t addr, const buxn_asm_sym_t* sy
 buxn_asm_file_t*
 buxn_asm_fopen(buxn_asm_ctx_t* ctx, const char* filename) {
 	buxn_ls_analyzer_t* analyzer = ctx->analyzer;
-	bhash_index_t file_index = bhash_find(&analyzer->files, filename);
+	bhash_index_t file_index = bhash_find(&analyzer->file_contents, filename);
 	buxn_ls_str_t content;
 	if (bhash_is_valid(file_index)) {  // File is already read
-		content = analyzer->files.values[file_index];
+		content = analyzer->file_contents.values[file_index];
 	} else {  // New file
 		bhash_index_t doc_index = bhash_find(&ctx->workspace->docs, (char*){ (char*)filename });
 		if (bhash_is_valid(doc_index)) {  // File is managed
@@ -219,7 +387,7 @@ buxn_asm_fopen(buxn_asm_ctx_t* ctx, const char* filename) {
 				return NULL;
 			}
 
-			char* read_buf = barena_memalign(ctx->analyzer->current_arena, stat.size, _Alignof(char));
+			char* read_buf = barena_memalign(&ctx->analyzer->current_ctx->arena, stat.size, _Alignof(char));
 			if (bio_fread_exactly(fd, read_buf, stat.size, &error) != stat.size) {
 				BIO_ERROR("Error while reading %s: " BIO_ERROR_FMT, full_path, BIO_ERROR_FMT_ARGS(&error));
 				bio_fclose(fd, NULL);
@@ -232,26 +400,26 @@ buxn_asm_fopen(buxn_asm_ctx_t* ctx, const char* filename) {
 			};
 			bio_fclose(fd, NULL);
 		}
-		bhash_put(&analyzer->files, filename, content);
+		bhash_put(&analyzer->file_contents, filename, content);
 	}
 
 	buxn_asm_file_t* file = buxn_ls_malloc(sizeof(buxn_asm_file_t));
 	*file = (buxn_asm_file_t){ .content = content };
 
-	bhash_alloc_result_t alloc_result = bhash_alloc(analyzer->current_dep_graph, filename);
+	bhash_alloc_result_t alloc_result = bhash_alloc(&analyzer->current_ctx->dep_graph, filename);
 	buxn_ls_node_t* node;
 	if (alloc_result.is_new) {
 		node = buxn_ls_alloc_node(analyzer, filename);
-		analyzer->current_dep_graph->keys[alloc_result.index] = node->filename;
-		analyzer->current_dep_graph->values[alloc_result.index] = node;
+		analyzer->current_ctx->dep_graph.keys[alloc_result.index] = node->filename;
+		analyzer->current_ctx->dep_graph.values[alloc_result.index] = node;
 	} else {
-		node = analyzer->current_dep_graph->values[alloc_result.index];
+		node = analyzer->current_ctx->dep_graph.values[alloc_result.index];
 	}
 	node->analyzed = true;
 
 	if (node != ctx->entry_node) {
 		buxn_ls_edge_t* edge = barena_memalign(
-			analyzer->current_arena,
+			&analyzer->current_ctx->arena,
 			sizeof(buxn_ls_edge_t), _Alignof(buxn_ls_edge_t)
 		);
 
@@ -279,164 +447,5 @@ buxn_asm_fgetc(buxn_asm_ctx_t* ctx, buxn_asm_file_t* file) {
 		return (int)file->content.chars[file->offset++];
 	} else {
 		return EOF;
-	}
-}
-
-void
-buxn_ls_analyzer_init(buxn_ls_analyzer_t* analyzer, barena_pool_t* pool) {
-	barena_init(&analyzer->arena_a, pool);
-	barena_init(&analyzer->arena_b, pool);
-	analyzer->current_arena = &analyzer->arena_a;
-	analyzer->previous_arena = &analyzer->arena_b;
-
-	bhash_config_t hash_config = bhash_config_default();
-	hash_config.eq = buxn_ls_str_eq;
-	hash_config.hash = buxn_ls_str_hash;
-	bhash_init(&analyzer->files, hash_config);
-	bhash_init(&analyzer->dep_graph_a, hash_config);
-	bhash_init(&analyzer->dep_graph_b, hash_config);
-	analyzer->current_dep_graph = &analyzer->dep_graph_a;
-	analyzer->previous_dep_graph = &analyzer->dep_graph_b;
-}
-
-void
-buxn_ls_analyzer_cleanup(buxn_ls_analyzer_t* analyzer) {
-	barray_free(NULL, analyzer->diagnostics);
-	barray_free(NULL, analyzer->lines);
-	barray_free(NULL, analyzer->analyze_queue);
-
-	bhash_cleanup(&analyzer->files);
-	bhash_cleanup(&analyzer->dep_graph_a);
-	bhash_cleanup(&analyzer->dep_graph_b);
-
-	barena_reset(&analyzer->arena_a);
-	barena_reset(&analyzer->arena_b);
-}
-
-void
-buxn_ls_analyze(buxn_ls_analyzer_t* analyzer, buxn_ls_workspace_t* workspace) {
-	{
-		barena_reset(analyzer->previous_arena);
-		barena_t* tmp = analyzer->current_arena;
-		analyzer->current_arena = analyzer->previous_arena;
-		analyzer->previous_arena = tmp;
-	}
-	{
-		bhash_clear(analyzer->previous_dep_graph);
-		buxn_ls_dep_graph_t* tmp = analyzer->current_dep_graph;
-		analyzer->current_dep_graph = analyzer->previous_dep_graph;
-		analyzer->previous_dep_graph = tmp;
-	}
-	barray_clear(analyzer->analyze_queue);
-
-	// Based on dependency of files in the previous run, try to figure out in
-	// what order the files should be compiled.
-	bhash_index_t num_docs = bhash_len(&workspace->docs);
-	for (bhash_index_t doc_index = 0 ; doc_index < num_docs; ++doc_index) {
-		const char* filename = workspace->docs.keys[doc_index];
-		bhash_index_t current_node_index = bhash_find(analyzer->current_dep_graph, filename);
-		if (bhash_is_valid(current_node_index)) {  // File is already added
-			continue;
-		}
-
-		bhash_index_t previous_node_index = bhash_find(analyzer->previous_dep_graph, filename);
-		if (bhash_is_valid(previous_node_index)) {  // We saw this file before
-			buxn_ls_queue_from_root(
-				analyzer,
-				workspace,
-				analyzer->previous_dep_graph->values[previous_node_index]
-			);
-		} else {  // This was never seen before
-			buxn_ls_do_queue_file(analyzer, filename);
-		}
-	}
-
-	// Analyze files in order
-	barray_clear(analyzer->diagnostics);
-	bhash_clear(&analyzer->files);
-	for (size_t i = 0; i < barray_len(analyzer->analyze_queue); ++i) {
-		buxn_ls_node_t* node = analyzer->analyze_queue[i];
-		if (!node->analyzed) {
-			BIO_INFO("Analyzing %s", node->filename);
-			buxn_asm_ctx_t ctx = {
-				.entry_node = node,
-				.analyzer = analyzer,
-				.workspace = workspace,
-			};
-
-			buxn_asm(&ctx, node->filename);
-		} else {
-			BIO_INFO("Skipping %s", node->filename);
-		}
-	}
-
-	// Coalesce reports into LSP diagnostic
-	size_t num_diags = barray_len(analyzer->diagnostics);
-	if (num_diags == 0) { return; }
-	qsort(
-		analyzer->diagnostics,
-		num_diags, sizeof(analyzer->diagnostics[0]),
-		buxn_ls_cmp_diagnostic
-	);
-
-	const char* previous_filename = NULL;
-	char* doc_uri = NULL;
-	for (size_t diag_index = 0; diag_index < num_diags; ++diag_index) {
-		buxn_ls_diagnostic_t* diag = &analyzer->diagnostics[diag_index];
-
-		if (diag->location.uri == previous_filename) {
-			diag->location.uri = doc_uri;
-			diag->related_location.uri = doc_uri;
-		} else {
-			const char* path = diag->location.uri;
-			size_t uri_len = strlen(path) + workspace->root_dir_len + sizeof("file://");
-			doc_uri = barena_memalign(analyzer->current_arena, uri_len, _Alignof(char));
-			snprintf(doc_uri, uri_len, "file://%s%s", workspace->root_dir, path);
-			diag->location.uri = doc_uri;
-			previous_filename = path;
-
-			// Split file content into lines to convert into LSP questionable
-			// position format
-			barray_clear(analyzer->lines);
-			bhash_index_t file_index = bhash_find(&analyzer->files, path);
-			if (!bhash_is_valid(file_index)) { continue; }
-
-			buxn_ls_str_t content = analyzer->files.values[file_index];
-			buxn_ls_str_t line = { .chars = content.chars, };
-			size_t start_index = 0;
-			for (size_t char_index = 0; char_index < content.len; ++char_index) {
-				char ch = content.chars[char_index];
-				if (ch == '\n') {
-					line.len = char_index - start_index;
-					barray_push(analyzer->lines, line, NULL);
-					line.chars = content.chars + char_index + 1;
-					start_index = char_index + 1;
-				} else if (ch == '\r') {
-					if (char_index < content.len - 1 && content.chars[char_index + 1] == '\n') {
-						line.len = char_index - start_index;
-						barray_push(analyzer->lines, line, NULL);
-						line.chars = content.chars + char_index + 2;
-						start_index = char_index + 2;
-					} else {
-						line.len = char_index - start_index;
-						barray_push(analyzer->lines, line, NULL);
-						line.chars = content.chars + char_index + 1;
-						start_index = char_index + 1;
-					}
-				}
-			}
-			// Last line
-			if (start_index < content.len) {
-				line.len = content.len - start_index;
-				barray_push(analyzer->lines, line, NULL);
-			}
-		}
-
-		buxn_ls_convert_position(analyzer, &diag->location.range.start);
-		buxn_ls_convert_position(analyzer, &diag->location.range.end);
-		if (diag->related_message != NULL) {
-			buxn_ls_convert_position(analyzer, &diag->related_location.range.start);
-			buxn_ls_convert_position(analyzer, &diag->related_location.range.end);
-		}
 	}
 }
