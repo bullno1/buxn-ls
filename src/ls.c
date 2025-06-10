@@ -315,6 +315,57 @@ buxn_ls_analyze_workspace(void* userdata) {
 }
 
 static void
+buxn_ls_handle_find_definition(
+	buxn_ls_ctx_t* ctx,
+	const bio_lsp_in_msg_t* request,
+	bio_lsp_out_msg_t* response
+) {
+	const char* uri = yyjson_get_str(
+		BIO_LSP_JSON_GET_LIT(BIO_LSP_JSON_GET_LIT(request->value, "textDocument"), "uri")
+	);
+	if (uri == NULL) {
+		response->value = yyjson_mut_null(response->doc);
+		return;
+	}
+	yyjson_val* position = BIO_LSP_JSON_GET_LIT(request->value, "position");
+	int line = yyjson_get_int(BIO_LSP_JSON_GET_LIT(position, "line"));
+	int character = yyjson_get_int(BIO_LSP_JSON_GET_LIT(position, "character"));
+	BIO_DEBUG("Resolving goto definition: %s:%d:%d", uri, line, character);
+
+	const char* path = buxn_ls_workspace_resolve_path(&ctx->workspace, (char*)uri);
+	if (path == NULL) {
+		response->value = yyjson_mut_null(response->doc);
+		return;
+	}
+
+	bhash_index_t node_index = bhash_find(&ctx->analyzer.current_ctx->nodes, path);
+	if (!bhash_is_valid(node_index)) {
+		response->value = yyjson_mut_null(response->doc);
+		return;
+	}
+
+	const buxn_ls_node_t* node = ctx->analyzer.current_ctx->nodes.values[node_index];
+	for (
+		buxn_ls_reference_t* ref = node->references;
+		ref != NULL;
+		ref = ref->next
+	) {
+		if (
+			(ref->range.start.line <= line && line <= ref->range.end.line)
+			&& (ref->range.start.character <= character && character < ref->range.end.character)
+		) {
+			response->value = yyjson_mut_obj(response->doc);
+			yyjson_mut_obj_add_str(response->doc, response->value, "uri", ref->definition_location.uri);
+			yyjson_mut_val* range = yyjson_mut_obj_add_obj(response->doc, response->value, "range");
+			buxn_ls_serialize_lsp_range(response->doc, range, &ref->definition_location.range);
+			return;
+		}
+	}
+
+	response->value = yyjson_mut_null(response->doc);
+}
+
+static void
 buxn_ls_handle_msg(buxn_ls_ctx_t* ctx, const bio_lsp_in_msg_t* in_msg) {
 	switch (in_msg->type) {
 		case BIO_LSP_MSG_REQUEST:
@@ -323,6 +374,10 @@ buxn_ls_handle_msg(buxn_ls_ctx_t* ctx, const bio_lsp_in_msg_t* in_msg) {
 				bio_cancel_timer(ctx->analyze_delay_timer);
 				bio_lsp_out_msg_t reply = buxn_ls_begin_msg(ctx, BIO_LSP_MSG_RESULT, in_msg);
 				reply.value = yyjson_mut_null(reply.doc);
+				buxn_ls_end_msg(ctx, &reply);
+			} else if (strcmp(in_msg->method, "textDocument/definition") == 0) {
+				bio_lsp_out_msg_t reply = buxn_ls_begin_msg(ctx, BIO_LSP_MSG_RESULT, in_msg);
+				buxn_ls_handle_find_definition(ctx, in_msg, &reply);
 				buxn_ls_end_msg(ctx, &reply);
 			} else {
 				BIO_WARN("Client called an unimplemented method: %s", in_msg->method);

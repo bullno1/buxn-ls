@@ -309,6 +309,7 @@ bio_lsp_send_msg(
 		NULL
 	);
 	bool success = false;
+	/*BIO_TRACE("%.*s", (int)content_length, body);*/
 
 	char header[32];
 	int header_len = snprintf(header, sizeof(header), "Content-Length: %zu\r\n\r\n", content_length);

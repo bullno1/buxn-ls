@@ -3,7 +3,8 @@
 		"textDocumentSync": {
 			"openClose": true,
 			"change": 1
-		}
+		},
+		"definitionProvider": true
 	},
 	"serverInfo": {
 		"name": "buxn-ls"
