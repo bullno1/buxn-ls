@@ -6,7 +6,10 @@
 		},
 		"definitionProvider": true,
 		"hoverProvider": true,
-		"documentSymbolProvider": true
+		"documentSymbolProvider": true,
+		"workspaceSymbolProvider": {
+			"resolveProvider": false
+		}
 	},
 	"serverInfo": {
 		"name": "buxn-ls"
