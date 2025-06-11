@@ -16,23 +16,6 @@ struct buxn_asm_ctx_s {
 	buxn_ls_workspace_t* workspace;
 };
 
-static bio_lsp_location_t
-buxn_source_region_to_lsp_location(const buxn_asm_source_region_t* region) {
-	return (bio_lsp_location_t){
-		.uri = region->filename,
-		.range = {
-			.start = {
-				.line = region->range.start.line,
-				.character = region->range.start.col,
-			},
-			.end = {
-				.line = region->range.end.line,
-				.character = region->range.end.col,
-			},
-		},
-	};
-}
-
 static int
 buxn_ls_cmp_diagnostic(const void* lhs, const void* rhs) {
 	const buxn_ls_diagnostic_t* dlhs = lhs;
@@ -105,23 +88,23 @@ buxn_ls_split_file(buxn_ls_analyzer_t* analyzer, const char* filename) {
 	};
 }
 
-static void
+static bio_lsp_position_t
 buxn_ls_convert_position(
 	buxn_ls_analyzer_t* analyzer,
 	const char* filename,
-	bio_lsp_position_t* pos
+	buxn_asm_file_pos_t basm_pos
 ) {
 	buxn_ls_line_slice_t line_slice = buxn_ls_split_file(analyzer, filename);
+	bio_lsp_position_t lsp_pos = { .line = basm_pos.line - 1 };
 
-	pos->line -= 1;
-	if (pos->line >= line_slice.num_lines) {
-		pos->line = line_slice.num_lines - 1;
-		pos->character = 0;
-		return;
+	if (lsp_pos.line >= line_slice.num_lines) {
+		lsp_pos.line = line_slice.num_lines - 1;
+		lsp_pos.character = 0;
+		return lsp_pos;
 	}
 
-	buxn_ls_str_t line = line_slice.lines[pos->line];
-	int utf8_offset = pos->character - 1;
+	buxn_ls_str_t line = line_slice.lines[lsp_pos.line];
+	int utf8_offset = basm_pos.col - 1;
 	utf8proc_ssize_t byte_offset = 0;
 	utf8proc_ssize_t line_len = line.len;
 	int code_unit_offset = 0;
@@ -136,41 +119,81 @@ buxn_ls_convert_position(
 		);
 
 		if (num_bytes < 0) {
-			BIO_WARN("Invalid codepoint encountered on line %d", pos->line + 1);
+			BIO_WARN("Invalid codepoint encountered on line %d", lsp_pos.line + 1);
 			break;
 		}
 
 		byte_offset += num_bytes;
 		code_unit_offset += (codepoint <= 0xFFFF ? 1 : 2);
 	}
-	pos->character = code_unit_offset;
+	lsp_pos.character = code_unit_offset;
+
+	return lsp_pos;
 }
 
-static void
+static bio_lsp_range_t
 buxn_ls_convert_range(
 	buxn_ls_analyzer_t* analyzer,
 	const char* filename,
-	bio_lsp_range_t* range
+	buxn_asm_file_range_t basm_range
 ) {
-	buxn_ls_convert_position(analyzer, filename, &range->start);
-	buxn_ls_convert_position(analyzer, filename, &range->end);
+	return (bio_lsp_range_t){
+		.start = buxn_ls_convert_position(analyzer, filename, basm_range.start),
+		.end = buxn_ls_convert_position(analyzer, filename, basm_range.end),
+	};
+}
+
+static bio_lsp_location_t
+buxn_ls_convert_region(
+	buxn_ls_analyzer_t* analyzer,
+	buxn_asm_source_region_t basm_region
+) {
+	bio_lsp_location_t location = {
+		.range = buxn_ls_convert_range(
+			analyzer, basm_region.filename, basm_region.range
+		),
+	};
+
+	bhash_index_t src_node_index = bhash_find(
+		&analyzer->current_ctx->sources,
+		basm_region.filename
+	);
+	if (bhash_is_valid(src_node_index)) {
+		location.uri = analyzer->current_ctx->sources.values[src_node_index]->uri;
+	}
+
+	return location;
 }
 
 static buxn_ls_src_node_t*
-buxn_ls_alloc_node(buxn_ls_analyzer_t* analyzer, const char* filename) {
+buxn_ls_alloc_node(
+	buxn_ls_analyzer_t* analyzer,
+	buxn_ls_workspace_t* workspace,
+	const char* filename
+) {
 	buxn_ls_src_node_t* node = barena_memalign(
 		&analyzer->current_ctx->arena,
 		sizeof(buxn_ls_src_node_t), _Alignof(buxn_ls_src_node_t)
 	);
+
+	size_t uri_len = (sizeof("file://") - 1) + workspace->root_dir_len + strlen(filename) + 1;
+	char* uri = barena_memalign(&analyzer->current_ctx->arena, uri_len, _Alignof(char));
+	// TODO: do we need to url encode?
+	snprintf(uri, uri_len, "file://%s%s", workspace->root_dir, filename);
 	*node = (buxn_ls_src_node_t){
-		.filename = buxn_ls_arena_strcpy(&analyzer->current_ctx->arena, filename),
+		.filename = uri + (sizeof("file://") - 1) + workspace->root_dir_len,
+		.uri = uri,
 	};
 	return node;
 }
 
 static void
-buxn_ls_do_queue_file(buxn_ls_analyzer_t* analyzer, const char* filename) {
-	buxn_ls_src_node_t* node = buxn_ls_alloc_node(analyzer, filename);
+buxn_ls_do_queue_file(
+	buxn_ls_analyzer_t* analyzer,
+	buxn_ls_workspace_t* workspace,
+	const char* filename
+) {
+	buxn_ls_src_node_t* node = buxn_ls_alloc_node(analyzer, workspace, filename);
 	bhash_put(&analyzer->current_ctx->sources, node->filename, node);
 	barray_push(analyzer->analyze_queue, node, NULL);
 }
@@ -186,7 +209,7 @@ buxn_ls_maybe_queue_node(
 
 	bhash_index_t doc_index = bhash_find(&workspace->docs, (char*){ (char*)node->filename });
 	if (bhash_is_valid(doc_index)) {  // The document is opened
-		buxn_ls_do_queue_file(analyzer, node->filename);
+		buxn_ls_do_queue_file(analyzer, workspace, node->filename);
 	}
 
 	// Queue all children
@@ -224,6 +247,32 @@ buxn_ls_queue_from_root(
 	} else {
 		buxn_ls_maybe_queue_node(analyzer, workspace, node);
 	}
+}
+
+static buxn_ls_sym_node_t*
+buxn_ls_make_sym_node(
+	buxn_ls_analyzer_t* analyzer,
+	const buxn_asm_sym_t* sym
+) {
+	bhash_index_t src_node_index = bhash_find(
+		&analyzer->current_ctx->sources,
+		sym->region.filename
+	);
+	assert(bhash_is_valid(src_node_index) && "Symbol comes from unopened file");
+	buxn_ls_src_node_t* src_node = analyzer->current_ctx->sources.values[src_node_index];
+
+	buxn_ls_sym_node_t* sym_node = barena_memalign(
+		&analyzer->current_ctx->arena,
+		sizeof(buxn_ls_sym_node_t), _Alignof(buxn_ls_sym_node_t)
+	);
+	*sym_node = (buxn_ls_sym_node_t){
+		.type = sym->type,
+		.source = src_node,
+		.range = buxn_ls_convert_range(
+			analyzer, sym->region.filename, sym->region.range
+		),
+	};
+	return sym_node;
 }
 
 static void
@@ -305,7 +354,7 @@ buxn_ls_analyze(buxn_ls_analyzer_t* analyzer, buxn_ls_workspace_t* workspace) {
 				analyzer->previous_ctx->sources.values[previous_node_index]
 			);
 		} else {  // This was never seen before
-			buxn_ls_do_queue_file(analyzer, filename);
+			buxn_ls_do_queue_file(analyzer, workspace, filename);
 		}
 	}
 
@@ -329,80 +378,48 @@ buxn_ls_analyze(buxn_ls_analyzer_t* analyzer, buxn_ls_workspace_t* workspace) {
 			};
 			buxn_asm(&ctx, node->filename);
 
+			// Connect references to definitions
 			size_t num_refs = barray_len(analyzer->references);
 			for (size_t sym_index = 0; sym_index < num_refs; ++sym_index) {
 				const buxn_asm_sym_t* sym = &analyzer->references[sym_index];
-				const char* filename = sym->region.filename;
 
-				const buxn_asm_source_region_t* def_region = NULL;
+				buxn_ls_sym_node_t* def_node = NULL;
 				if (sym->type == BUXN_ASM_SYM_MACRO_REF) {
 					// Macros cannot be forward declared so references can only
 					// be resolved when a macro is already declared
-					def_region = &analyzer->macro_defs[sym->id - 1].region;
+					def_node = analyzer->macro_defs[sym->id - 1];
 				} else if (sym->type == BUXN_ASM_SYM_LABEL_REF) {
 					bhash_index_t def_index = bhash_find(&analyzer->label_defs, sym->id);
 					if (bhash_is_valid(def_index)) {
-						def_region = &analyzer->label_defs.values[def_index].region;
+						def_node = analyzer->label_defs.values[def_index];
 					}
 				}
 
-				if (def_region == NULL) {
+				if (def_node == NULL) {  // Unresolved reference
 					continue;
 				}
 
-				bhash_index_t file_index = bhash_find(&analyzer->files, def_region->filename);
-				assert(bhash_is_valid(file_index) && "Defining file is never opened");
-				buxn_ls_file_t* def_file = &analyzer->files.values[file_index];
-
-				buxn_ls_reference_t* reference = barena_memalign(
+				buxn_ls_sym_node_t* ref_node = buxn_ls_make_sym_node(analyzer, sym);
+				ref_node->next = ref_node->source->references;
+				ref_node->source->references = ref_node;
+				buxn_ls_graph_add_edge(
 					&analyzer->current_ctx->arena,
-					sizeof(buxn_ls_reference_t), _Alignof(buxn_ls_reference_t)
+					&ref_node->base,
+					&def_node->base
 				);
-				*reference = (buxn_ls_reference_t) {
-					.range = buxn_source_region_to_lsp_location(&sym->region).range,
-					.definition_location = {
-						.uri = def_file->uri,
-						.range = buxn_source_region_to_lsp_location(def_region).range,
-					},
-				};
-				buxn_ls_convert_range(
-					analyzer,
-					filename,
-					&reference->range
-				);
-				buxn_ls_convert_range(
-					analyzer,
-					def_region->filename,
-					&reference->definition_location.range
-				);
-
-				bhash_alloc_result_t alloc_result = bhash_alloc(&analyzer->current_ctx->sources, filename);
-				buxn_ls_src_node_t* ref_node;
-				if (alloc_result.is_new) {
-					ref_node = barena_memalign(
-						&analyzer->current_ctx->arena,
-						sizeof(buxn_ls_src_node_t), _Alignof(buxn_ls_src_node_t)
-					);
-					analyzer->current_ctx->sources.keys[alloc_result.index] = filename;
-					analyzer->current_ctx->sources.values[alloc_result.index] = node;
-				} else {
-					ref_node = analyzer->current_ctx->sources.values[alloc_result.index];
-				}
-
-				reference->next = ref_node->references;
-				ref_node->references = reference;
 				/*BIO_TRACE(*/
-					/*"Indexed reference to %s "*/
-					/*" from %s:%d:%d:%d:%d to %s:%d:%d:%d:%d ",*/
+					/*"Connecting reference for %s"*/
+					/*" from %s:%d:%d:%d:%d"*/
+					/*" to %s:%d:%d:%d:%d",*/
 					/*sym->name,*/
 
-					/*filename,*/
-					/*reference->range.start.line, reference->range.start.character,*/
-					/*reference->range.end.line, reference->range.end.character,*/
+					/*ref_node->source->uri,*/
+					/*ref_node->range.start.line, ref_node->range.start.character,*/
+					/*ref_node->range.end.line, ref_node->range.end.character,*/
 
-					/*reference->definition_location.uri,*/
-					/*reference->definition_location.range.start.line, reference->definition_location.range.start.character,*/
-					/*reference->definition_location.range.end.line, reference->definition_location.range.end.character*/
+					/*def_node->source->uri,*/
+					/*def_node->range.start.line, def_node->range.start.character,*/
+					/*def_node->range.end.line, def_node->range.end.character*/
 				/*);*/
 			}
 		} else {
@@ -410,40 +427,14 @@ buxn_ls_analyze(buxn_ls_analyzer_t* analyzer, buxn_ls_workspace_t* workspace) {
 		}
 	}
 
-	// Coalesce reports into LSP diagnostic
+	// Sort diagnostics so that messages for the same file are grouped together
 	size_t num_diags = barray_len(analyzer->diagnostics);
-	if (num_diags == 0) { return; }
-	qsort(
-		analyzer->diagnostics,
-		num_diags, sizeof(analyzer->diagnostics[0]),
-		buxn_ls_cmp_diagnostic
-	);
-
-	const char* current_filename = NULL;
-	const char* doc_uri = NULL;
-	for (size_t diag_index = 0; diag_index < num_diags; ++diag_index) {
-		buxn_ls_diagnostic_t* diag = &analyzer->diagnostics[diag_index];
-
-		if (diag->location.uri == current_filename) {
-			diag->location.uri = doc_uri;
-			diag->related_location.uri = doc_uri;
-		} else {
-			const char* path = diag->location.uri;
-
-			bhash_index_t file_index = bhash_find(&analyzer->files, path);
-			assert(bhash_is_valid(file_index) && "Diagnostic comes from unvisited file");
-
-			buxn_ls_file_t* file = &analyzer->files.values[file_index];
-			doc_uri = diag->location.uri = file->uri;
-			current_filename = path;
-		}
-
-		buxn_ls_convert_position(analyzer, current_filename, &diag->location.range.start);
-		buxn_ls_convert_position(analyzer, current_filename, &diag->location.range.end);
-		if (diag->related_message != NULL) {
-			buxn_ls_convert_position(analyzer, current_filename, &diag->related_location.range.start);
-			buxn_ls_convert_position(analyzer, current_filename, &diag->related_location.range.end);
-		}
+	if (num_diags > 0) {
+		qsort(
+			analyzer->diagnostics,
+			num_diags, sizeof(analyzer->diagnostics[0]),
+			buxn_ls_cmp_diagnostic
+		);
 	}
 }
 
@@ -469,10 +460,8 @@ buxn_asm_report(buxn_asm_ctx_t* ctx, buxn_asm_report_type_t type, const buxn_asm
 		}
 	}
 
-	// Collect all reports first
-	// They will be sorted and converted to LSP format later
 	buxn_ls_diagnostic_t diag = {
-		.location = buxn_source_region_to_lsp_location(report->region),
+		.location = buxn_ls_convert_region(ctx->analyzer, *report->region),
 		.message = report->message,
 		.source = "buxn-asm",
 	};
@@ -491,7 +480,7 @@ buxn_asm_report(buxn_asm_ctx_t* ctx, buxn_asm_report_type_t type, const buxn_asm
 		report->related_message != NULL
 		&& report->related_region->filename == report->region->filename
 	) {
-		diag.related_location = buxn_source_region_to_lsp_location(report->related_region);
+		diag.related_location = buxn_ls_convert_region(ctx->analyzer, *report->region);
 		diag.related_message = report->related_message;
 	}
 
@@ -511,12 +500,16 @@ buxn_asm_put_symbol(buxn_asm_ctx_t* ctx, uint16_t addr, const buxn_asm_sym_t* sy
 	buxn_ls_analyzer_t* analyzer = ctx->analyzer;
 	switch (sym->type) {
 		case BUXN_ASM_SYM_MACRO:
-			barray_push(analyzer->macro_defs, *sym, NULL);
-			break;
 		case BUXN_ASM_SYM_LABEL: {
-			buxn_asm_sym_t sym_copy = *sym;
-			uint16_t id = sym->id;
-			bhash_put(&analyzer->label_defs, id, sym_copy);
+			buxn_ls_sym_node_t* sym_node = buxn_ls_make_sym_node(analyzer, sym);
+			sym_node->next = sym_node->source->definitions;
+			sym_node->source->definitions = sym_node;
+			if (sym->type == BUXN_ASM_SYM_LABEL) {
+				uint16_t id = sym->id;
+				bhash_put(&analyzer->label_defs, id, sym_node);
+			} else {
+				barray_push(analyzer->macro_defs, sym_node, NULL);
+			}
 		} break;
 		case BUXN_ASM_SYM_MACRO_REF:
 		case BUXN_ASM_SYM_LABEL_REF:
@@ -569,12 +562,7 @@ buxn_asm_fopen(buxn_asm_ctx_t* ctx, const char* filename) {
 			bio_fclose(fd, NULL);
 		}
 
-		size_t uri_len = (sizeof("file://") - 1) + ctx->workspace->root_dir_len + strlen(filename) + 1;
-		char* uri = barena_memalign(&analyzer->current_ctx->arena, uri_len, _Alignof(char));
-		// TODO: do we need to url encode?
-		snprintf(uri, uri_len, "file://%s%s", ctx->workspace->root_dir, filename);
 		buxn_ls_file_t file = {
-			.uri = uri,
 			.content = content,
 			.first_line_index = -1,
 			.first_error_byte = INT_MAX,  // No error
@@ -588,7 +576,7 @@ buxn_asm_fopen(buxn_asm_ctx_t* ctx, const char* filename) {
 	bhash_alloc_result_t alloc_result = bhash_alloc(&analyzer->current_ctx->sources, filename);
 	buxn_ls_src_node_t* node;
 	if (alloc_result.is_new) {
-		node = buxn_ls_alloc_node(analyzer, filename);
+		node = buxn_ls_alloc_node(analyzer, ctx->workspace, filename);
 		analyzer->current_ctx->sources.keys[alloc_result.index] = node->filename;
 		analyzer->current_ctx->sources.values[alloc_result.index] = node;
 	} else {

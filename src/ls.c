@@ -4,6 +4,7 @@
 #include "resources.h"
 #include "workspace.h"
 #include "analyze.h"
+#include "bmacro.h"
 #include <string.h>
 #include <yyjson.h>
 #include <yuarel.h>
@@ -317,7 +318,7 @@ buxn_ls_analyze_workspace(void* userdata) {
 	ctx->currently_diagnosed_files = tmp;
 }
 
-static buxn_ls_reference_t*
+static const buxn_ls_sym_node_t*
 buxn_ls_find_definition(buxn_ls_ctx_t* ctx, yyjson_val* text_document_position) {
 	const char* uri = yyjson_get_str(
 		BIO_LSP_JSON_GET_LIT(BIO_LSP_JSON_GET_LIT(text_document_position, "textDocument"), "uri")
@@ -335,12 +336,13 @@ buxn_ls_find_definition(buxn_ls_ctx_t* ctx, yyjson_val* text_document_position) 
 	int character = yyjson_get_int(BIO_LSP_JSON_GET_LIT(position, "character"));
 
 	const buxn_ls_src_node_t* node = ctx->analyzer.current_ctx->sources.values[node_index];
-	for (buxn_ls_reference_t* ref = node->references; ref != NULL; ref = ref->next) {
+	for (buxn_ls_sym_node_t* ref = node->references; ref != NULL; ref = ref->next) {
 		if (
 			(ref->range.start.line <= line && line <= ref->range.end.line)
 			&& (ref->range.start.character <= character && character < ref->range.end.character)
 		) {
-			return ref;
+			if (ref->base.out_edges == NULL) { return NULL; }
+			return BCONTAINER_OF(ref->base.out_edges->to, buxn_ls_sym_node_t, base);
 		}
 	}
 
@@ -353,12 +355,12 @@ buxn_ls_handle_find_definition(
 	const bio_lsp_in_msg_t* request,
 	bio_lsp_out_msg_t* response
 ) {
-	const buxn_ls_reference_t* ref = buxn_ls_find_definition(ctx, request->value);
-	if (ref != NULL) {
+	const buxn_ls_sym_node_t* def = buxn_ls_find_definition(ctx, request->value);
+	if (def != NULL) {
 		response->value = yyjson_mut_obj(response->doc);
-		yyjson_mut_obj_add_str(response->doc, response->value, "uri", ref->definition_location.uri);
+		yyjson_mut_obj_add_str(response->doc, response->value, "uri", def->source->uri);
 		yyjson_mut_val* range = yyjson_mut_obj_add_obj(response->doc, response->value, "range");
-		buxn_ls_serialize_lsp_range(response->doc, range, &ref->definition_location.range);
+		buxn_ls_serialize_lsp_range(response->doc, range, &def->range);
 	} else {
 		response->value = yyjson_mut_null(response->doc);
 	}
@@ -370,13 +372,13 @@ buxn_ls_handle_hover(
 	const bio_lsp_in_msg_t* request,
 	bio_lsp_out_msg_t* response
 ) {
-	const buxn_ls_reference_t* ref = buxn_ls_find_definition(ctx, request->value);
-	if (ref == NULL) {
+	const buxn_ls_sym_node_t* def = buxn_ls_find_definition(ctx, request->value);
+	if (def == NULL) {
 		response->value = yyjson_mut_null(response->doc);
 		return;
 	}
 
-	char* uri = buxn_ls_arena_strcpy(&ctx->request_arena, ref->definition_location.uri);
+	char* uri = buxn_ls_arena_strcpy(&ctx->request_arena, def->source->uri);
 	const char* path = buxn_ls_workspace_resolve_path(&ctx->workspace, uri);
 	if (path == NULL) {
 		response->value = yyjson_mut_null(response->doc);
@@ -384,16 +386,16 @@ buxn_ls_handle_hover(
 	}
 
 	buxn_ls_line_slice_t slice = buxn_ls_split_file(&ctx->analyzer, path);
-	if (ref->definition_location.range.start.line >= slice.num_lines) {
+	if (def->range.start.line >= slice.num_lines) {
 		response->value = yyjson_mut_null(response->doc);
 		return;
 	}
 
-	buxn_ls_str_t line = slice.lines[ref->definition_location.range.start.line];
+	buxn_ls_str_t line = slice.lines[def->range.start.line];
 	response->value = yyjson_mut_obj(response->doc);
 	yyjson_mut_obj_add_strn(response->doc, response->value, "contents", line.chars, line.len);
 	yyjson_mut_val* range = yyjson_mut_obj_add_obj(response->doc, response->value, "range");
-	buxn_ls_serialize_lsp_range(response->doc, range, &ref->range);
+	buxn_ls_serialize_lsp_range(response->doc, range, &def->range);
 }
 
 static void

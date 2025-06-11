@@ -28,21 +28,28 @@ typedef struct {
 	const char* related_message;
 } buxn_ls_diagnostic_t;
 
-typedef struct buxn_ls_reference_s buxn_ls_reference_t;
-struct buxn_ls_reference_s {
-	buxn_ls_reference_t* next;
+typedef struct buxn_ls_src_node_s buxn_ls_src_node_t;
+typedef struct buxn_ls_sym_node_s buxn_ls_sym_node_t;
 
-	bio_lsp_location_t definition_location;
+struct buxn_ls_sym_node_s {
+	buxn_ls_sym_node_t* next;
+
+	buxn_ls_src_node_t* source;
+	buxn_asm_sym_type_t type;
 	bio_lsp_range_t range;
-};
-
-typedef struct {
-	const char* filename;
-	bool analyzed;
-	buxn_ls_reference_t* references;
 
 	buxn_ls_node_base_t base;
-} buxn_ls_src_node_t;
+};
+
+struct buxn_ls_src_node_s {
+	const char* filename;
+	const char* uri;
+	buxn_ls_sym_node_t* references;
+	buxn_ls_sym_node_t* definitions;
+	bool analyzed;
+
+	buxn_ls_node_base_t base;
+};
 
 struct buxn_asm_file_s {
 	buxn_ls_str_t content;
@@ -55,7 +62,6 @@ typedef struct {
 } buxn_ls_analyzer_ctx_t;
 
 typedef struct {
-	const char* uri;
 	buxn_ls_str_t content;
 
 	int first_line_index;
@@ -79,8 +85,8 @@ typedef struct {
 	barray(buxn_ls_str_t) lines;
 	barray(buxn_ls_src_node_t*) analyze_queue;
 
-	barray(buxn_asm_sym_t) macro_defs;
-	BHASH_TABLE(uint16_t, buxn_asm_sym_t) label_defs;
+	barray(buxn_ls_sym_node_t*) macro_defs;
+	BHASH_TABLE(uint16_t, buxn_ls_sym_node_t*) label_defs;
 	barray(buxn_asm_sym_t) references;
 } buxn_ls_analyzer_t;
 
