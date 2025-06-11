@@ -327,14 +327,14 @@ buxn_ls_find_definition(buxn_ls_ctx_t* ctx, yyjson_val* text_document_position) 
 	const char* path = buxn_ls_workspace_resolve_path(&ctx->workspace, (char*)uri);
 	if (path == NULL) { return NULL; }
 
-	bhash_index_t node_index = bhash_find(&ctx->analyzer.current_ctx->nodes, path);
+	bhash_index_t node_index = bhash_find(&ctx->analyzer.current_ctx->sources, path);
 	if (!bhash_is_valid(node_index)) { return NULL; }
 
 	yyjson_val* position = BIO_LSP_JSON_GET_LIT(text_document_position, "position");
 	int line = yyjson_get_int(BIO_LSP_JSON_GET_LIT(position, "line"));
 	int character = yyjson_get_int(BIO_LSP_JSON_GET_LIT(position, "character"));
 
-	const buxn_ls_node_t* node = ctx->analyzer.current_ctx->nodes.values[node_index];
+	const buxn_ls_src_node_t* node = ctx->analyzer.current_ctx->sources.values[node_index];
 	for (buxn_ls_reference_t* ref = node->references; ref != NULL; ref = ref->next) {
 		if (
 			(ref->range.start.line <= line && line <= ref->range.end.line)

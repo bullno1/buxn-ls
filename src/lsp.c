@@ -1,11 +1,9 @@
 #include "lsp.h"
+#include "bmacro.h"
 #include <yyjson.h>
 #include <stdlib.h>
 #include <errno.h>
 #include <limits.h>
-
-#define BIO_CONTAINER_OF(ptr, type, member) \
-	((type *)((char *)(1 ? (ptr) : &((type *)0)->member) - offsetof(type, member)))
 
 typedef enum {
 	BIO_LSP_BAD_HEADER,
@@ -119,25 +117,25 @@ bio_lsp_recv_line(bio_lsp_msg_reader_t* reader, bio_error_t* error) {
 
 static size_t
 bio_lsp_socket_conn_recv(bio_lsp_conn_t* conn, void* buf, size_t size, bio_error_t* error) {
-	bio_lsp_socket_conn_t* socket_conn = BIO_CONTAINER_OF(conn, bio_lsp_socket_conn_t, conn);
+	bio_lsp_socket_conn_t* socket_conn = BCONTAINER_OF(conn, bio_lsp_socket_conn_t, conn);
 	return bio_net_recv(socket_conn->socket, buf, size, error);
 }
 
 static size_t
 bio_lsp_socket_conn_send(bio_lsp_conn_t* conn, const void* buf, size_t size, bio_error_t* error) {
-	bio_lsp_socket_conn_t* socket_conn = BIO_CONTAINER_OF(conn, bio_lsp_socket_conn_t, conn);
+	bio_lsp_socket_conn_t* socket_conn = BCONTAINER_OF(conn, bio_lsp_socket_conn_t, conn);
 	return bio_net_send(socket_conn->socket, buf, size, error);
 }
 
 static size_t
 bio_lsp_file_conn_recv(bio_lsp_conn_t* conn, void* buf, size_t size, bio_error_t* error) {
-	bio_lsp_file_conn_t* file_conn = BIO_CONTAINER_OF(conn, bio_lsp_file_conn_t, conn);
+	bio_lsp_file_conn_t* file_conn = BCONTAINER_OF(conn, bio_lsp_file_conn_t, conn);
 	return bio_fread(file_conn->in, buf, size, error);
 }
 
 static size_t
 bio_lsp_file_conn_send(bio_lsp_conn_t* conn, const void* buf, size_t size, bio_error_t* error) {
-	bio_lsp_file_conn_t* file_conn = BIO_CONTAINER_OF(conn, bio_lsp_file_conn_t, conn);
+	bio_lsp_file_conn_t* file_conn = BCONTAINER_OF(conn, bio_lsp_file_conn_t, conn);
 	return bio_fwrite(file_conn->out, buf, size, error);
 }
 

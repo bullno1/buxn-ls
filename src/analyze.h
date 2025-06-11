@@ -7,6 +7,7 @@
 #include <buxn/asm/asm.h>
 #include "lsp.h"
 #include "common.h"
+#include "graph.h"
 
 struct buxn_ls_workspace_s;
 
@@ -27,17 +28,6 @@ typedef struct {
 	const char* related_message;
 } buxn_ls_diagnostic_t;
 
-typedef struct buxn_ls_edge_s buxn_ls_edge_t;
-typedef struct buxn_ls_node_s buxn_ls_node_t;
-
-struct buxn_ls_edge_s {
-	buxn_ls_edge_t* next_in;
-	buxn_ls_edge_t* next_out;
-
-	buxn_ls_node_t* from;
-	buxn_ls_node_t* to;
-};
-
 typedef struct buxn_ls_reference_s buxn_ls_reference_t;
 struct buxn_ls_reference_s {
 	buxn_ls_reference_t* next;
@@ -46,14 +36,13 @@ struct buxn_ls_reference_s {
 	bio_lsp_range_t range;
 };
 
-struct buxn_ls_node_s {
+typedef struct {
 	const char* filename;
 	bool analyzed;
-	buxn_ls_edge_t* in_edges;
-	buxn_ls_edge_t* out_edges;
-
 	buxn_ls_reference_t* references;
-};
+
+	buxn_ls_node_base_t base;
+} buxn_ls_src_node_t;
 
 struct buxn_asm_file_s {
 	buxn_ls_str_t content;
@@ -62,7 +51,7 @@ struct buxn_asm_file_s {
 
 typedef struct {
 	barena_t arena;
-	BHASH_TABLE(const char*, buxn_ls_node_t*) nodes;
+	BHASH_TABLE(const char*, buxn_ls_src_node_t*) sources;
 } buxn_ls_analyzer_ctx_t;
 
 typedef struct {
@@ -88,7 +77,7 @@ typedef struct {
 	barray(buxn_ls_diagnostic_t) diagnostics;
 	BHASH_TABLE(const char*, buxn_ls_file_t) files;
 	barray(buxn_ls_str_t) lines;
-	barray(buxn_ls_node_t*) analyze_queue;
+	barray(buxn_ls_src_node_t*) analyze_queue;
 
 	barray(buxn_asm_sym_t) macro_defs;
 	BHASH_TABLE(uint16_t, buxn_asm_sym_t) label_defs;
