@@ -464,6 +464,22 @@ buxn_ls_handle_hover(
 	buxn_ls_serialize_lsp_range(response->doc, range, &def->range);
 }
 
+static int
+buxn_ls_convert_symbol_semantics(buxn_ls_symbol_semantics_t semantics) {
+	switch (semantics) {
+		case BUXN_LS_SYMBOL_AS_VARIABLE:
+			return 8;  // Field
+		case BUXN_LS_SYMBOL_AS_SUBROUTINE:
+			return 12;  // Function
+		case BUXN_LS_SYMBOL_AS_DEVICE_PORT:
+			return 14;  // Constant
+		case BUXN_LS_SYMBOL_AS_ENUM:
+			return 22;  // Enum
+	}
+
+	return 8;  // Field
+}
+
 static void
 buxn_ls_handle_list_doc_symbols(
 	buxn_ls_ctx_t* ctx,
@@ -499,21 +515,10 @@ buxn_ls_handle_list_doc_symbols(
 	) {
 		yyjson_mut_val* sym_obj = yyjson_mut_arr_add_obj(response->doc, response->value);
 		yyjson_mut_obj_add_str(response->doc, sym_obj, "name", sym->name);
-
-		// TODO: use comment to change symbol type
-		int kind;
-		switch (sym->type) {
-			case BUXN_ASM_SYM_MACRO:
-				kind = 12;  // Function
-				break;
-			case BUXN_ASM_SYM_LABEL:
-				kind = 8;  // Field
-				break;
-			default:
-				kind = 8;
-				break;
-		}
-		yyjson_mut_obj_add_int(response->doc, sym_obj, "kind", kind);
+		yyjson_mut_obj_add_int(
+			response->doc, sym_obj,
+			"kind", buxn_ls_convert_symbol_semantics(sym->semantics)
+		);
 
 		// TODO: Add signature
 		buxn_ls_serialize_lsp_range(
@@ -556,20 +561,10 @@ buxn_ls_handle_list_workspace_symbols(
 			yyjson_mut_val* sym_obj = yyjson_mut_arr_add_obj(response->doc, response->value);
 			yyjson_mut_obj_add_str(response->doc, sym_obj, "name", sym->name);
 
-			// TODO: use comment to change symbol type
-			int kind;
-			switch (sym->type) {
-				case BUXN_ASM_SYM_MACRO:
-					kind = 12;  // Function
-					break;
-				case BUXN_ASM_SYM_LABEL:
-					kind = 8;  // Field
-					break;
-				default:
-					kind = 8;
-					break;
-			}
-			yyjson_mut_obj_add_int(response->doc, sym_obj, "kind", kind);
+			yyjson_mut_obj_add_int(
+				response->doc, sym_obj,
+				"kind", buxn_ls_convert_symbol_semantics(sym->semantics)
+			);
 
 			yyjson_mut_val* location_obj = yyjson_mut_obj_add_obj(response->doc, sym_obj, "location");
 			yyjson_mut_obj_add_str(response->doc, location_obj, "uri", sym->source->uri);

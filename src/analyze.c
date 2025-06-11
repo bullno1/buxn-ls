@@ -277,6 +277,16 @@ buxn_ls_make_sym_node(
 	return sym_node;
 }
 
+static buxn_ls_file_t*
+buxn_ls_find_file(buxn_ls_analyzer_t* analyzer, const char* filename) {
+	bhash_index_t file_index = bhash_find(&analyzer->files, filename);
+	if (bhash_is_valid(file_index)) {
+		return &analyzer->files.values[file_index];
+	} else {
+		return NULL;
+	}
+}
+
 static void
 buxn_ls_init_analyzer_ctx(buxn_ls_analyzer_ctx_t* ctx, barena_pool_t* pool) {
 	barena_init(&ctx->arena, pool);
@@ -514,6 +524,23 @@ buxn_asm_put_symbol(buxn_asm_ctx_t* ctx, uint16_t addr, const buxn_asm_sym_t* sy
 
 	buxn_ls_analyzer_t* analyzer = ctx->analyzer;
 	switch (sym->type) {
+		case BUXN_ASM_SYM_COMMENT: {
+			if (sym->id == 0) {  // Begin comment block
+				if (strcmp(sym->name, "(buxn:device") == 0) {
+					buxn_ls_file_t* file = buxn_ls_find_file(analyzer, sym->region.filename);
+					assert((file != NULL) && "Symbol comes from unopened file");
+					file->zero_page_semantics = BUXN_LS_SYMBOL_AS_DEVICE_PORT;
+				} else if (strcmp(sym->name, "(buxn:memory") == 0) {
+					buxn_ls_file_t* file = buxn_ls_find_file(analyzer, sym->region.filename);
+					assert((file != NULL) && "Symbol comes from unopened file");
+					file->zero_page_semantics = BUXN_LS_SYMBOL_AS_VARIABLE;
+				} else if (strcmp(sym->name, "(buxn:enum") == 0) {
+					buxn_ls_file_t* file = buxn_ls_find_file(analyzer, sym->region.filename);
+					assert((file != NULL) && "Symbol comes from unopened file");
+					file->zero_page_semantics = BUXN_LS_SYMBOL_AS_ENUM;
+				}
+			}
+		} break;
 		case BUXN_ASM_SYM_MACRO:
 		case BUXN_ASM_SYM_LABEL: {
 			if (!sym->name_is_generated) {
@@ -521,9 +548,16 @@ buxn_asm_put_symbol(buxn_asm_ctx_t* ctx, uint16_t addr, const buxn_asm_sym_t* sy
 				sym_node->next = sym_node->source->definitions;
 				sym_node->source->definitions = sym_node;
 				if (sym->type == BUXN_ASM_SYM_LABEL) {
+					if (addr <= 0x00ff) {  // Zero-page
+						buxn_ls_file_t* file = buxn_ls_find_file(analyzer, sym->region.filename);
+						assert((file != NULL) && "Symbol comes from unopened file");
+						sym_node->semantics = file->zero_page_semantics;
+					}
+
 					uint16_t id = sym->id;
 					bhash_put(&analyzer->label_defs, id, sym_node);
 				} else {
+					sym_node->semantics = BUXN_LS_SYMBOL_AS_SUBROUTINE;
 					barray_push(analyzer->macro_defs, sym_node, NULL);
 				}
 			}
@@ -582,6 +616,7 @@ buxn_asm_fopen(buxn_asm_ctx_t* ctx, const char* filename) {
 
 		buxn_ls_file_t file = {
 			.content = content,
+			.zero_page_semantics = BUXN_LS_SYMBOL_AS_VARIABLE,
 			.first_line_index = -1,
 			.first_error_byte = INT_MAX,  // No error
 		};

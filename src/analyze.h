@@ -18,6 +18,13 @@ typedef enum {
 	BIO_LSP_DIAGNOSTIC_HINT = 4,
 } bio_lsp_diagnostic_severity_t;
 
+typedef enum {
+	BUXN_LS_SYMBOL_AS_VARIABLE,
+	BUXN_LS_SYMBOL_AS_SUBROUTINE,
+	BUXN_LS_SYMBOL_AS_DEVICE_PORT,
+	BUXN_LS_SYMBOL_AS_ENUM,
+} buxn_ls_symbol_semantics_t;
+
 typedef struct {
 	bio_lsp_location_t location;
 	bio_lsp_location_t related_location;
@@ -37,6 +44,7 @@ struct buxn_ls_sym_node_s {
 	const char* name;
 	buxn_ls_src_node_t* source;
 	buxn_asm_sym_type_t type;
+	buxn_ls_symbol_semantics_t semantics;
 	bio_lsp_range_t range;
 
 	buxn_ls_node_base_t base;
@@ -64,6 +72,7 @@ typedef struct {
 
 typedef struct {
 	buxn_ls_str_t content;
+	buxn_ls_symbol_semantics_t zero_page_semantics;
 
 	int first_line_index;
 	int num_lines;
