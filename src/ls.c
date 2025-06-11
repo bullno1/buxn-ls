@@ -30,6 +30,17 @@ typedef struct {
 	buxn_ls_str_set_t* previously_diagnosed_files;
 } buxn_ls_ctx_t;
 
+typedef void (*buxn_ls_request_handler_t)(
+	buxn_ls_ctx_t* ctx,
+	const bio_lsp_in_msg_t* request,
+	bio_lsp_out_msg_t* response
+);
+
+typedef struct {
+	const char* method;
+	buxn_ls_request_handler_t handler;
+} buxn_ls_handler_entry_t;
+
 static void*
 buxn_ls_json_realloc(void* ctx, void* ptr, size_t old_size, size_t new_size) {
 	(void)ctx;
@@ -578,35 +589,41 @@ buxn_ls_handle_list_workspace_symbols(
 }
 
 static void
+buxn_ls_handle_shutdown(
+	buxn_ls_ctx_t* ctx,
+	const bio_lsp_in_msg_t* request,
+	bio_lsp_out_msg_t* response
+) {
+	BIO_INFO("shutdown received");
+	bio_cancel_timer(ctx->analyze_delay_timer);
+	response->value = yyjson_mut_null(response->doc);
+}
+
+static const buxn_ls_handler_entry_t BUXN_LS_REQUEST_HANDLERS[] = {
+	{ "shutdown", buxn_ls_handle_shutdown },
+	{ "textDocument/definition", buxn_ls_handle_find_definition },
+	{ "textDocument/references", buxn_ls_handle_find_references },
+	{ "textDocument/hover", buxn_ls_handle_hover },
+	{ "textDocument/documentSymbol", buxn_ls_handle_list_doc_symbols },
+	{ "workspace/symbol", buxn_ls_handle_list_workspace_symbols },
+};
+
+static void
 buxn_ls_handle_msg(buxn_ls_ctx_t* ctx, const bio_lsp_in_msg_t* in_msg) {
 	switch (in_msg->type) {
-		case BIO_LSP_MSG_REQUEST:
-			barena_reset(&ctx->request_arena);
-			if (strcmp(in_msg->method, "shutdown") == 0) {
-				BIO_INFO("shutdown received");
-				bio_cancel_timer(ctx->analyze_delay_timer);
+		case BIO_LSP_MSG_REQUEST: {
+			buxn_ls_request_handler_t request_handler = NULL;
+			for (int i = 0; i < (int)BCOUNT_OF(BUXN_LS_REQUEST_HANDLERS); ++i) {
+				if (strcmp(BUXN_LS_REQUEST_HANDLERS[i].method, in_msg->method) == 0) {
+					request_handler = BUXN_LS_REQUEST_HANDLERS[i].handler;
+					break;
+				}
+			}
+
+			if (request_handler != NULL) {
+				barena_reset(&ctx->request_arena);
 				bio_lsp_out_msg_t reply = buxn_ls_begin_msg(ctx, BIO_LSP_MSG_RESULT, in_msg);
-				reply.value = yyjson_mut_null(reply.doc);
-				buxn_ls_end_msg(ctx, &reply);
-			} else if (strcmp(in_msg->method, "textDocument/definition") == 0) {
-				bio_lsp_out_msg_t reply = buxn_ls_begin_msg(ctx, BIO_LSP_MSG_RESULT, in_msg);
-				buxn_ls_handle_find_definition(ctx, in_msg, &reply);
-				buxn_ls_end_msg(ctx, &reply);
-			} else if (strcmp(in_msg->method, "textDocument/references") == 0) {
-				bio_lsp_out_msg_t reply = buxn_ls_begin_msg(ctx, BIO_LSP_MSG_RESULT, in_msg);
-				buxn_ls_handle_find_references(ctx, in_msg, &reply);
-				buxn_ls_end_msg(ctx, &reply);
-			} else if (strcmp(in_msg->method, "textDocument/hover") == 0) {
-				bio_lsp_out_msg_t reply = buxn_ls_begin_msg(ctx, BIO_LSP_MSG_RESULT, in_msg);
-				buxn_ls_handle_hover(ctx, in_msg, &reply);
-				buxn_ls_end_msg(ctx, &reply);
-			} else if (strcmp(in_msg->method, "textDocument/documentSymbol") == 0) {
-				bio_lsp_out_msg_t reply = buxn_ls_begin_msg(ctx, BIO_LSP_MSG_RESULT, in_msg);
-				buxn_ls_handle_list_doc_symbols(ctx, in_msg, &reply);
-				buxn_ls_end_msg(ctx, &reply);
-			} else if (strcmp(in_msg->method, "workspace/symbol") == 0) {
-				bio_lsp_out_msg_t reply = buxn_ls_begin_msg(ctx, BIO_LSP_MSG_RESULT, in_msg);
-				buxn_ls_handle_list_workspace_symbols(ctx, in_msg, &reply);
+				request_handler(ctx, in_msg, &reply);
 				buxn_ls_end_msg(ctx, &reply);
 			} else {
 				BIO_WARN("Client called an unimplemented method: %s", in_msg->method);
@@ -616,7 +633,7 @@ buxn_ls_handle_msg(buxn_ls_ctx_t* ctx, const bio_lsp_in_msg_t* in_msg) {
 				yyjson_mut_obj_add_str(reply.doc, reply.value, "message", "Method not found");
 				buxn_ls_end_msg(ctx, &reply);
 			}
-			break;
+		} break;
 		case BIO_LSP_MSG_NOTIFICATION:
 			if (strcmp(in_msg->method, "exit") == 0) {
 				BIO_INFO("exit received");
