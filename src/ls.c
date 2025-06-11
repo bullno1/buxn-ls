@@ -441,10 +441,10 @@ buxn_ls_handle_list_doc_symbols(
 				kind = 12;  // Function
 				break;
 			case BUXN_ASM_SYM_LABEL:
-				kind = 13;  // Variable
+				kind = 8;  // Field
 				break;
 			default:
-				kind = 13;
+				kind = 8;
 				break;
 		}
 		yyjson_mut_obj_add_int(response->doc, sym_obj, "kind", kind);
@@ -497,10 +497,10 @@ buxn_ls_handle_list_workspace_symbols(
 					kind = 12;  // Function
 					break;
 				case BUXN_ASM_SYM_LABEL:
-					kind = 13;  // Variable
+					kind = 8;  // Field
 					break;
 				default:
-					kind = 13;
+					kind = 8;
 					break;
 			}
 			yyjson_mut_obj_add_int(response->doc, sym_obj, "kind", kind);
