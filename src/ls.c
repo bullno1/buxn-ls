@@ -399,6 +399,71 @@ buxn_ls_handle_hover(
 }
 
 static void
+buxn_ls_handle_list_doc_symbols(
+	buxn_ls_ctx_t* ctx,
+	const bio_lsp_in_msg_t* request,
+	bio_lsp_out_msg_t* response
+) {
+	const char* uri = yyjson_get_str(
+		BIO_LSP_JSON_GET_LIT(BIO_LSP_JSON_GET_LIT(request->value, "textDocument"), "uri")
+	);
+	if (uri == NULL) {
+		response->value = yyjson_mut_null(response->doc);
+		return;
+	}
+
+	const char* path = buxn_ls_workspace_resolve_path(&ctx->workspace, (char*)uri);
+	if (path == NULL) {
+		response->value = yyjson_mut_null(response->doc);
+		return;
+	}
+
+	bhash_index_t src_node_index = bhash_find(&ctx->analyzer.current_ctx->sources, path);
+	if (!bhash_is_valid(src_node_index)) {
+		response->value = yyjson_mut_null(response->doc);
+		return;
+	}
+
+	response->value = yyjson_mut_arr(response->doc);
+	const buxn_ls_src_node_t* src_node = ctx->analyzer.current_ctx->sources.values[src_node_index];
+	for (
+		buxn_ls_sym_node_t* sym = src_node->definitions;
+		sym != NULL;
+		sym = sym->next
+	) {
+		yyjson_mut_val* sym_obj = yyjson_mut_arr_add_obj(response->doc, response->value);
+		yyjson_mut_obj_add_str(response->doc, sym_obj, "name", sym->name);
+
+		// TODO: use comment to change symbol type
+		int kind;
+		switch (sym->type) {
+			case BUXN_ASM_SYM_MACRO:
+				kind = 12;  // Function
+				break;
+			case BUXN_ASM_SYM_LABEL:
+				kind = 13;  // Variable
+				break;
+			default:
+				kind = 13;
+				break;
+		}
+		yyjson_mut_obj_add_int(response->doc, sym_obj, "kind", kind);
+
+		// TODO: Add signature
+		buxn_ls_serialize_lsp_range(
+			response->doc,
+			yyjson_mut_obj_add_obj(response->doc, sym_obj, "range"),
+			&sym->range
+		);
+		buxn_ls_serialize_lsp_range(
+			response->doc,
+			yyjson_mut_obj_add_obj(response->doc, sym_obj, "selectionRange"),
+			&sym->range
+		);
+	}
+}
+
+static void
 buxn_ls_handle_msg(buxn_ls_ctx_t* ctx, const bio_lsp_in_msg_t* in_msg) {
 	switch (in_msg->type) {
 		case BIO_LSP_MSG_REQUEST:
@@ -416,6 +481,10 @@ buxn_ls_handle_msg(buxn_ls_ctx_t* ctx, const bio_lsp_in_msg_t* in_msg) {
 			} else if (strcmp(in_msg->method, "textDocument/hover") == 0) {
 				bio_lsp_out_msg_t reply = buxn_ls_begin_msg(ctx, BIO_LSP_MSG_RESULT, in_msg);
 				buxn_ls_handle_hover(ctx, in_msg, &reply);
+				buxn_ls_end_msg(ctx, &reply);
+			} else if (strcmp(in_msg->method, "textDocument/documentSymbol") == 0) {
+				bio_lsp_out_msg_t reply = buxn_ls_begin_msg(ctx, BIO_LSP_MSG_RESULT, in_msg);
+				buxn_ls_handle_list_doc_symbols(ctx, in_msg, &reply);
 				buxn_ls_end_msg(ctx, &reply);
 			} else {
 				BIO_WARN("Client called an unimplemented method: %s", in_msg->method);

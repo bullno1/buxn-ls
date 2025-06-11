@@ -267,6 +267,7 @@ buxn_ls_make_sym_node(
 	);
 	*sym_node = (buxn_ls_sym_node_t){
 		.type = sym->type,
+		.name = sym->name,
 		.source = src_node,
 		.range = buxn_ls_convert_range(
 			analyzer, sym->region.filename, sym->region.range
@@ -501,14 +502,16 @@ buxn_asm_put_symbol(buxn_asm_ctx_t* ctx, uint16_t addr, const buxn_asm_sym_t* sy
 	switch (sym->type) {
 		case BUXN_ASM_SYM_MACRO:
 		case BUXN_ASM_SYM_LABEL: {
-			buxn_ls_sym_node_t* sym_node = buxn_ls_make_sym_node(analyzer, sym);
-			sym_node->next = sym_node->source->definitions;
-			sym_node->source->definitions = sym_node;
-			if (sym->type == BUXN_ASM_SYM_LABEL) {
-				uint16_t id = sym->id;
-				bhash_put(&analyzer->label_defs, id, sym_node);
-			} else {
-				barray_push(analyzer->macro_defs, sym_node, NULL);
+			if (!sym->name_is_generated) {
+				buxn_ls_sym_node_t* sym_node = buxn_ls_make_sym_node(analyzer, sym);
+				sym_node->next = sym_node->source->definitions;
+				sym_node->source->definitions = sym_node;
+				if (sym->type == BUXN_ASM_SYM_LABEL) {
+					uint16_t id = sym->id;
+					bhash_put(&analyzer->label_defs, id, sym_node);
+				} else {
+					barray_push(analyzer->macro_defs, sym_node, NULL);
+				}
 			}
 		} break;
 		case BUXN_ASM_SYM_MACRO_REF:

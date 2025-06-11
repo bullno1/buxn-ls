@@ -34,6 +34,7 @@ typedef struct buxn_ls_sym_node_s buxn_ls_sym_node_t;
 struct buxn_ls_sym_node_s {
 	buxn_ls_sym_node_t* next;
 
+	const char* name;
 	buxn_ls_src_node_t* source;
 	buxn_asm_sym_type_t type;
 	bio_lsp_range_t range;

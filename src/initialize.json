@@ -5,7 +5,8 @@
 			"change": 1
 		},
 		"definitionProvider": true,
-		"hoverProvider": true
+		"hoverProvider": true,
+		"documentSymbolProvider": true
 	},
 	"serverInfo": {
 		"name": "buxn-ls"
