@@ -14,6 +14,7 @@ struct buxn_asm_ctx_s {
 	buxn_ls_src_node_t* entry_node;
 	buxn_ls_analyzer_t* analyzer;
 	buxn_ls_workspace_t* workspace;
+	buxn_ls_sym_node_t* last_def_node;
 	buxn_asm_sym_t previous_sym;
 };
 
@@ -539,6 +540,18 @@ buxn_asm_put_symbol(buxn_asm_ctx_t* ctx, uint16_t addr, const buxn_asm_sym_t* sy
 					assert((file != NULL) && "Symbol comes from unopened file");
 					file->zero_page_semantics = BUXN_LS_SYMBOL_AS_ENUM;
 				}
+			} else if (sym->id == 1) {  // Inner comment
+				if (  // Stack comment following a macro or label
+					ctx->last_def_node != NULL
+					&& (
+						strcmp(sym->name, "--") == 0
+						|| strcmp(sym->name, "->") == 0
+						|| strcmp(sym->name, ".") == 0
+					)
+				) {
+					ctx->last_def_node->semantics = BUXN_LS_SYMBOL_AS_SUBROUTINE;
+					ctx->last_def_node = NULL;
+				}
 			}
 		} break;
 		case BUXN_ASM_SYM_MACRO:
@@ -560,13 +573,18 @@ buxn_asm_put_symbol(buxn_asm_ctx_t* ctx, uint16_t addr, const buxn_asm_sym_t* sy
 					sym_node->semantics = BUXN_LS_SYMBOL_AS_SUBROUTINE;
 					barray_push(analyzer->macro_defs, sym_node, NULL);
 				}
+				ctx->last_def_node = sym_node;
+			} else {
+				ctx->last_def_node = NULL;
 			}
 		} break;
 		case BUXN_ASM_SYM_MACRO_REF:
 		case BUXN_ASM_SYM_LABEL_REF:
 			barray_push(analyzer->references, *sym, NULL);
+			ctx->last_def_node = NULL;
 			break;
 		default:
+			ctx->last_def_node = NULL;
 			break;
 	}
 	ctx->previous_sym = *sym;
