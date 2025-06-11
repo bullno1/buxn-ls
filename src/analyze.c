@@ -14,6 +14,7 @@ struct buxn_asm_ctx_s {
 	buxn_ls_src_node_t* entry_node;
 	buxn_ls_analyzer_t* analyzer;
 	buxn_ls_workspace_t* workspace;
+	buxn_asm_sym_t previous_sym;
 };
 
 static int
@@ -498,6 +499,19 @@ buxn_asm_put_rom(buxn_asm_ctx_t* ctx, uint16_t addr, uint8_t value) {
 void
 buxn_asm_put_symbol(buxn_asm_ctx_t* ctx, uint16_t addr, const buxn_asm_sym_t* sym) {
 	(void)addr;
+	// When an address reference is 16 bit, there will be two identical symbols
+	// emitted for both bytes.
+	// We should only consider the first symbol.
+	if (
+		sym->type == ctx->previous_sym.type
+		&& sym->id == ctx->previous_sym.id
+		&& sym->region.filename == ctx->previous_sym.region.filename
+		&& sym->region.range.start.byte == ctx->previous_sym.region.range.start.byte
+		&& sym->region.range.end.byte == ctx->previous_sym.region.range.end.byte
+	) {
+		return;
+	}
+
 	buxn_ls_analyzer_t* analyzer = ctx->analyzer;
 	switch (sym->type) {
 		case BUXN_ASM_SYM_MACRO:
@@ -521,6 +535,7 @@ buxn_asm_put_symbol(buxn_asm_ctx_t* ctx, uint16_t addr, const buxn_asm_sym_t* sy
 		default:
 			break;
 	}
+	ctx->previous_sym = *sym;
 }
 
 buxn_asm_file_t*
