@@ -367,6 +367,72 @@ buxn_ls_handle_find_definition(
 }
 
 static void
+buxn_ls_handle_find_references(
+	buxn_ls_ctx_t* ctx,
+	const bio_lsp_in_msg_t* request,
+	bio_lsp_out_msg_t* response
+) {
+	const char* uri = yyjson_get_str(
+		BIO_LSP_JSON_GET_LIT(BIO_LSP_JSON_GET_LIT(request->value, "textDocument"), "uri")
+	);
+	if (uri == NULL) {
+		response->value = yyjson_mut_null(response->doc);
+		return;
+	}
+
+	const char* path = buxn_ls_workspace_resolve_path(&ctx->workspace, (char*)uri);
+	if (path == NULL) {
+		response->value = yyjson_mut_null(response->doc);
+		return;
+	}
+
+	bhash_index_t src_node_index = bhash_find(&ctx->analyzer.current_ctx->sources, path);
+	if (!bhash_is_valid(src_node_index)) {
+		response->value = yyjson_mut_null(response->doc);
+		return;
+	}
+
+	yyjson_val* position = BIO_LSP_JSON_GET_LIT(request->value, "position");
+	int line = yyjson_get_int(BIO_LSP_JSON_GET_LIT(position, "line"));
+	int character = yyjson_get_int(BIO_LSP_JSON_GET_LIT(position, "character"));
+
+	const buxn_ls_src_node_t* src_node = ctx->analyzer.current_ctx->sources.values[src_node_index];
+	const buxn_ls_sym_node_t* def_node = NULL;
+	for (buxn_ls_sym_node_t* def = src_node->definitions; def != NULL; def = def->next) {
+		if (
+			(def->range.start.line <= line && line <= def->range.end.line)
+			&& (def->range.start.character <= character && character < def->range.end.character)
+		) {
+			def_node = def;
+			break;
+		}
+	}
+
+	if (def_node == NULL) {
+		response->value = yyjson_mut_null(response->doc);
+		return;
+	}
+
+	response->value = yyjson_mut_arr(response->doc);
+	for (
+		buxn_ls_edge_t* edge = def_node->base.in_edges;
+		edge != NULL;
+		edge = edge->next_in
+	) {
+		const buxn_ls_sym_node_t* ref_node = BCONTAINER_OF(
+			edge->from, buxn_ls_sym_node_t, base
+		);
+		yyjson_mut_val* location_obj = yyjson_mut_arr_add_obj(response->doc, response->value);
+		yyjson_mut_obj_add_str(response->doc, location_obj, "uri", ref_node->source->uri);
+		buxn_ls_serialize_lsp_range(
+			response->doc,
+			yyjson_mut_obj_add_obj(response->doc, location_obj, "range"),
+			&ref_node->range
+		);
+	}
+}
+
+static void
 buxn_ls_handle_hover(
 	buxn_ls_ctx_t* ctx,
 	const bio_lsp_in_msg_t* request,
@@ -530,6 +596,10 @@ buxn_ls_handle_msg(buxn_ls_ctx_t* ctx, const bio_lsp_in_msg_t* in_msg) {
 			} else if (strcmp(in_msg->method, "textDocument/definition") == 0) {
 				bio_lsp_out_msg_t reply = buxn_ls_begin_msg(ctx, BIO_LSP_MSG_RESULT, in_msg);
 				buxn_ls_handle_find_definition(ctx, in_msg, &reply);
+				buxn_ls_end_msg(ctx, &reply);
+			} else if (strcmp(in_msg->method, "textDocument/references") == 0) {
+				bio_lsp_out_msg_t reply = buxn_ls_begin_msg(ctx, BIO_LSP_MSG_RESULT, in_msg);
+				buxn_ls_handle_find_references(ctx, in_msg, &reply);
 				buxn_ls_end_msg(ctx, &reply);
 			} else if (strcmp(in_msg->method, "textDocument/hover") == 0) {
 				bio_lsp_out_msg_t reply = buxn_ls_begin_msg(ctx, BIO_LSP_MSG_RESULT, in_msg);

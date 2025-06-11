@@ -5,6 +5,7 @@
 			"change": 1
 		},
 		"definitionProvider": true,
+		"referencesProvider": true,
 		"hoverProvider": true,
 		"documentSymbolProvider": true,
 		"workspaceSymbolProvider": {
