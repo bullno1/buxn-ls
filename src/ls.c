@@ -30,10 +30,10 @@ typedef struct {
 	buxn_ls_str_set_t* previously_diagnosed_files;
 } buxn_ls_ctx_t;
 
-typedef void (*buxn_ls_request_handler_t)(
+typedef yyjson_mut_val* (*buxn_ls_request_handler_t)(
 	buxn_ls_ctx_t* ctx,
-	const bio_lsp_in_msg_t* request,
-	bio_lsp_out_msg_t* response
+	yyjson_val* request,
+	yyjson_mut_doc* response
 );
 
 typedef struct {
@@ -360,50 +360,40 @@ buxn_ls_find_definition(buxn_ls_ctx_t* ctx, yyjson_val* text_document_position) 
 	return NULL;
 }
 
-static void
+static yyjson_mut_val*
 buxn_ls_handle_find_definition(
 	buxn_ls_ctx_t* ctx,
-	const bio_lsp_in_msg_t* request,
-	bio_lsp_out_msg_t* response
+	yyjson_val* request,
+	yyjson_mut_doc* response
 ) {
-	const buxn_ls_sym_node_t* def = buxn_ls_find_definition(ctx, request->value);
-	if (def != NULL) {
-		response->value = yyjson_mut_obj(response->doc);
-		yyjson_mut_obj_add_str(response->doc, response->value, "uri", def->source->uri);
-		yyjson_mut_val* range = yyjson_mut_obj_add_obj(response->doc, response->value, "range");
-		buxn_ls_serialize_lsp_range(response->doc, range, &def->range);
-	} else {
-		response->value = yyjson_mut_null(response->doc);
-	}
+	const buxn_ls_sym_node_t* def = buxn_ls_find_definition(ctx, request);
+	if (def == NULL) { return NULL; }
+
+	yyjson_mut_val* result = yyjson_mut_obj(response);
+	yyjson_mut_obj_add_str(response, result, "uri", def->source->uri);
+	yyjson_mut_val* range = yyjson_mut_obj_add_obj(response, result, "range");
+	buxn_ls_serialize_lsp_range(response, range, &def->range);
+	return result;
 }
 
-static void
+static yyjson_mut_val*
 buxn_ls_handle_find_references(
 	buxn_ls_ctx_t* ctx,
-	const bio_lsp_in_msg_t* request,
-	bio_lsp_out_msg_t* response
+	yyjson_val* request,
+	yyjson_mut_doc* response
 ) {
 	const char* uri = yyjson_get_str(
-		BIO_LSP_JSON_GET_LIT(BIO_LSP_JSON_GET_LIT(request->value, "textDocument"), "uri")
+		BIO_LSP_JSON_GET_LIT(BIO_LSP_JSON_GET_LIT(request, "textDocument"), "uri")
 	);
-	if (uri == NULL) {
-		response->value = yyjson_mut_null(response->doc);
-		return;
-	}
+	if (uri == NULL) { return NULL; }
 
 	const char* path = buxn_ls_workspace_resolve_path(&ctx->workspace, (char*)uri);
-	if (path == NULL) {
-		response->value = yyjson_mut_null(response->doc);
-		return;
-	}
+	if (path == NULL) { return NULL; }
 
 	bhash_index_t src_node_index = bhash_find(&ctx->analyzer.current_ctx->sources, path);
-	if (!bhash_is_valid(src_node_index)) {
-		response->value = yyjson_mut_null(response->doc);
-		return;
-	}
+	if (!bhash_is_valid(src_node_index)) { return NULL; }
 
-	yyjson_val* position = BIO_LSP_JSON_GET_LIT(request->value, "position");
+	yyjson_val* position = BIO_LSP_JSON_GET_LIT(request, "position");
 	int line = yyjson_get_int(BIO_LSP_JSON_GET_LIT(position, "line"));
 	int character = yyjson_get_int(BIO_LSP_JSON_GET_LIT(position, "character"));
 
@@ -419,12 +409,9 @@ buxn_ls_handle_find_references(
 		}
 	}
 
-	if (def_node == NULL) {
-		response->value = yyjson_mut_null(response->doc);
-		return;
-	}
+	if (def_node == NULL) { return NULL; }
 
-	response->value = yyjson_mut_arr(response->doc);
+	yyjson_mut_val* result = yyjson_mut_arr(response);
 	for (
 		buxn_ls_edge_t* edge = def_node->base.in_edges;
 		edge != NULL;
@@ -433,46 +420,39 @@ buxn_ls_handle_find_references(
 		const buxn_ls_sym_node_t* ref_node = BCONTAINER_OF(
 			edge->from, buxn_ls_sym_node_t, base
 		);
-		yyjson_mut_val* location_obj = yyjson_mut_arr_add_obj(response->doc, response->value);
-		yyjson_mut_obj_add_str(response->doc, location_obj, "uri", ref_node->source->uri);
+		yyjson_mut_val* location_obj = yyjson_mut_arr_add_obj(response, result);
+		yyjson_mut_obj_add_str(response, location_obj, "uri", ref_node->source->uri);
 		buxn_ls_serialize_lsp_range(
-			response->doc,
-			yyjson_mut_obj_add_obj(response->doc, location_obj, "range"),
+			response,
+			yyjson_mut_obj_add_obj(response, location_obj, "range"),
 			&ref_node->range
 		);
 	}
+	return result;
 }
 
-static void
+static yyjson_mut_val*
 buxn_ls_handle_hover(
 	buxn_ls_ctx_t* ctx,
-	const bio_lsp_in_msg_t* request,
-	bio_lsp_out_msg_t* response
+	yyjson_val* request,
+	yyjson_mut_doc* response
 ) {
-	const buxn_ls_sym_node_t* def = buxn_ls_find_definition(ctx, request->value);
-	if (def == NULL) {
-		response->value = yyjson_mut_null(response->doc);
-		return;
-	}
+	const buxn_ls_sym_node_t* def = buxn_ls_find_definition(ctx, request);
+	if (def == NULL) { return NULL; }
 
 	char* uri = buxn_ls_arena_strcpy(&ctx->request_arena, def->source->uri);
 	const char* path = buxn_ls_workspace_resolve_path(&ctx->workspace, uri);
-	if (path == NULL) {
-		response->value = yyjson_mut_null(response->doc);
-		return;
-	}
+	if (path == NULL) { return NULL; }
 
 	buxn_ls_line_slice_t slice = buxn_ls_split_file(&ctx->analyzer, path);
-	if (def->range.start.line >= slice.num_lines) {
-		response->value = yyjson_mut_null(response->doc);
-		return;
-	}
+	if (def->range.start.line >= slice.num_lines) { return NULL; }
 
 	buxn_ls_str_t line = slice.lines[def->range.start.line];
-	response->value = yyjson_mut_obj(response->doc);
-	yyjson_mut_obj_add_strn(response->doc, response->value, "contents", line.chars, line.len);
-	yyjson_mut_val* range = yyjson_mut_obj_add_obj(response->doc, response->value, "range");
-	buxn_ls_serialize_lsp_range(response->doc, range, &def->range);
+	yyjson_mut_val* result = yyjson_mut_obj(response);
+	yyjson_mut_obj_add_strn(response, result, "contents", line.chars, line.len);
+	yyjson_mut_val* range_obj = yyjson_mut_obj_add_obj(response, result, "range");
+	buxn_ls_serialize_lsp_range(response, range_obj, &def->range);
+	return result;
 }
 
 static int
@@ -491,74 +471,64 @@ buxn_ls_convert_symbol_semantics(buxn_ls_symbol_semantics_t semantics) {
 	return 8;  // Field
 }
 
-static void
+static yyjson_mut_val*
 buxn_ls_handle_list_doc_symbols(
 	buxn_ls_ctx_t* ctx,
-	const bio_lsp_in_msg_t* request,
-	bio_lsp_out_msg_t* response
+	yyjson_val* request,
+	yyjson_mut_doc* response
 ) {
 	const char* uri = yyjson_get_str(
-		BIO_LSP_JSON_GET_LIT(BIO_LSP_JSON_GET_LIT(request->value, "textDocument"), "uri")
+		BIO_LSP_JSON_GET_LIT(BIO_LSP_JSON_GET_LIT(request, "textDocument"), "uri")
 	);
-	if (uri == NULL) {
-		response->value = yyjson_mut_null(response->doc);
-		return;
-	}
+	if (uri == NULL) { return NULL; }
 
 	const char* path = buxn_ls_workspace_resolve_path(&ctx->workspace, (char*)uri);
-	if (path == NULL) {
-		response->value = yyjson_mut_null(response->doc);
-		return;
-	}
+	if (path == NULL) { return NULL; }
 
 	bhash_index_t src_node_index = bhash_find(&ctx->analyzer.current_ctx->sources, path);
-	if (!bhash_is_valid(src_node_index)) {
-		response->value = yyjson_mut_null(response->doc);
-		return;
-	}
+	if (!bhash_is_valid(src_node_index)) { return NULL; }
 
-	response->value = yyjson_mut_arr(response->doc);
+	yyjson_mut_val* result = yyjson_mut_arr(response);
 	const buxn_ls_src_node_t* src_node = ctx->analyzer.current_ctx->sources.values[src_node_index];
 	for (
 		buxn_ls_sym_node_t* sym = src_node->definitions;
 		sym != NULL;
 		sym = sym->next
 	) {
-		yyjson_mut_val* sym_obj = yyjson_mut_arr_add_obj(response->doc, response->value);
-		yyjson_mut_obj_add_str(response->doc, sym_obj, "name", sym->name);
+		yyjson_mut_val* sym_obj = yyjson_mut_arr_add_obj(response, result);
+		yyjson_mut_obj_add_str(response, sym_obj, "name", sym->name);
 		yyjson_mut_obj_add_int(
-			response->doc, sym_obj,
+			response, sym_obj,
 			"kind", buxn_ls_convert_symbol_semantics(sym->semantics)
 		);
 
 		// TODO: Add signature
 		buxn_ls_serialize_lsp_range(
-			response->doc,
-			yyjson_mut_obj_add_obj(response->doc, sym_obj, "range"),
+			response,
+			yyjson_mut_obj_add_obj(response, sym_obj, "range"),
 			&sym->range
 		);
 		buxn_ls_serialize_lsp_range(
-			response->doc,
-			yyjson_mut_obj_add_obj(response->doc, sym_obj, "selectionRange"),
+			response,
+			yyjson_mut_obj_add_obj(response, sym_obj, "selectionRange"),
 			&sym->range
 		);
 	}
+
+	return result;
 }
 
-static void
+static yyjson_mut_val*
 buxn_ls_handle_list_workspace_symbols(
 	buxn_ls_ctx_t* ctx,
-	const bio_lsp_in_msg_t* request,
-	bio_lsp_out_msg_t* response
+	yyjson_val* request,
+	yyjson_mut_doc* response
 ) {
-	const char* query = yyjson_get_str(BIO_LSP_JSON_GET_LIT(request->value, "query"));
-	if (query == NULL) {
-		response->value = yyjson_mut_null(response->doc);
-		return;
-	}
+	const char* query = yyjson_get_str(BIO_LSP_JSON_GET_LIT(request, "query"));
+	if (query == NULL) { return NULL; }
 	size_t query_len = strlen(query);
 
-	response->value = yyjson_mut_arr(response->doc);
+	yyjson_mut_val* result = yyjson_mut_arr(response);
 	bhash_index_t num_sources = bhash_len(&ctx->analyzer.current_ctx->sources);
 	for (bhash_index_t src_index = 0; src_index < num_sources; ++src_index) {
 		const buxn_ls_src_node_t* src_node = ctx->analyzer.current_ctx->sources.values[src_index];
@@ -569,34 +539,35 @@ buxn_ls_handle_list_workspace_symbols(
 		) {
 			if (strncmp(sym->name, query, query_len) != 0) { continue; }
 
-			yyjson_mut_val* sym_obj = yyjson_mut_arr_add_obj(response->doc, response->value);
-			yyjson_mut_obj_add_str(response->doc, sym_obj, "name", sym->name);
+			yyjson_mut_val* sym_obj = yyjson_mut_arr_add_obj(response, result);
+			yyjson_mut_obj_add_str(response, sym_obj, "name", sym->name);
 
 			yyjson_mut_obj_add_int(
-				response->doc, sym_obj,
+				response, sym_obj,
 				"kind", buxn_ls_convert_symbol_semantics(sym->semantics)
 			);
 
-			yyjson_mut_val* location_obj = yyjson_mut_obj_add_obj(response->doc, sym_obj, "location");
-			yyjson_mut_obj_add_str(response->doc, location_obj, "uri", sym->source->uri);
+			yyjson_mut_val* location_obj = yyjson_mut_obj_add_obj(response, sym_obj, "location");
+			yyjson_mut_obj_add_str(response, location_obj, "uri", sym->source->uri);
 			buxn_ls_serialize_lsp_range(
-				response->doc,
-				yyjson_mut_obj_add_obj(response->doc, location_obj, "range"),
+				response,
+				yyjson_mut_obj_add_obj(response, location_obj, "range"),
 				&sym->range
 			);
 		}
 	}
+	return result;
 }
 
-static void
+static yyjson_mut_val*
 buxn_ls_handle_shutdown(
 	buxn_ls_ctx_t* ctx,
-	const bio_lsp_in_msg_t* request,
-	bio_lsp_out_msg_t* response
+	yyjson_val* request,
+	yyjson_mut_doc* response
 ) {
 	BIO_INFO("shutdown received");
 	bio_cancel_timer(ctx->analyze_delay_timer);
-	response->value = yyjson_mut_null(response->doc);
+	return NULL;
 }
 
 static const buxn_ls_handler_entry_t BUXN_LS_REQUEST_HANDLERS[] = {
@@ -623,7 +594,11 @@ buxn_ls_handle_msg(buxn_ls_ctx_t* ctx, const bio_lsp_in_msg_t* in_msg) {
 			if (request_handler != NULL) {
 				barena_reset(&ctx->request_arena);
 				bio_lsp_out_msg_t reply = buxn_ls_begin_msg(ctx, BIO_LSP_MSG_RESULT, in_msg);
-				request_handler(ctx, in_msg, &reply);
+				yyjson_mut_val* reply_value = request_handler(ctx, in_msg->value, reply.doc);
+				if (reply_value == NULL) {
+					reply_value = yyjson_mut_null(reply.doc);
+				}
+				reply.value = reply_value;
 				buxn_ls_end_msg(ctx, &reply);
 			} else {
 				BIO_WARN("Client called an unimplemented method: %s", in_msg->method);
