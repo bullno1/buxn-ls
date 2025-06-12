@@ -40,7 +40,8 @@ ctrlc_handler(void* userdata) {
 	pthread_sigmask(SIG_BLOCK, &mask, &old);
 
 	int sigfd = signalfd(-1, &mask, SFD_CLOEXEC);
-	bio_file_t sig_file = bio_fdopen(sigfd);
+	bio_file_t sig_file;
+	bio_fdopen(&sig_file, sigfd, NULL);
 	struct signalfd_siginfo ssi;
 	bio_fread(sig_file, &ssi, sizeof(ssi), NULL);
 	BIO_INFO("Received signal: %d", ssi.ssi_signo);
