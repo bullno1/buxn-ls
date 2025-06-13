@@ -4,6 +4,7 @@
 #include "resources.h"
 #include "workspace.h"
 #include "analyze.h"
+#include "completion.h"
 #include "bmacro.h"
 #include <string.h>
 #include <yyjson.h>
@@ -28,6 +29,7 @@ typedef struct {
 	buxn_ls_str_set_t diag_file_set_b;
 	buxn_ls_str_set_t* currently_diagnosed_files;
 	buxn_ls_str_set_t* previously_diagnosed_files;
+	barray(buxn_ls_str_t) completion_lines;
 } buxn_ls_ctx_t;
 
 typedef yyjson_mut_val* (*buxn_ls_request_handler_t)(
@@ -200,6 +202,7 @@ buxn_ls_cleanup(buxn_ls_ctx_t* ctx) {
 		buxn_ls_free(uri);
 	}
 
+	barray_free(NULL, ctx->completion_lines);
 	bhash_cleanup(&ctx->diag_file_set_a);
 	bhash_cleanup(&ctx->diag_file_set_b);
 	buxn_ls_workspace_cleanup(&ctx->workspace);
@@ -444,7 +447,7 @@ buxn_ls_handle_hover(
 	const char* path = buxn_ls_workspace_resolve_path(&ctx->workspace, uri);
 	if (path == NULL) { return NULL; }
 
-	buxn_ls_line_slice_t slice = buxn_ls_split_file(&ctx->analyzer, path);
+	buxn_ls_line_slice_t slice = buxn_ls_analyzer_split_file(&ctx->analyzer, path);
 	if (def->range.start.line >= slice.num_lines) { return NULL; }
 
 	buxn_ls_str_t line = slice.lines[def->range.start.line];
@@ -560,6 +563,70 @@ buxn_ls_handle_list_workspace_symbols(
 }
 
 static yyjson_mut_val*
+buxn_ls_handle_completion(
+	buxn_ls_ctx_t* ctx,
+	yyjson_val* request,
+	yyjson_mut_doc* response
+) {
+	const char* uri = yyjson_get_str(
+		BIO_LSP_JSON_GET_LIT(BIO_LSP_JSON_GET_LIT(request, "textDocument"), "uri")
+	);
+	if (uri == NULL) { return NULL; }
+
+	const char* path = buxn_ls_workspace_resolve_path(&ctx->workspace, (char*)uri);
+	if (path == NULL) { return NULL; }
+
+	// Retrieve the doc from workspace since it is not yet analyzed
+	bhash_index_t doc_index = bhash_find(&ctx->workspace.docs, (char*){ (char*)path });
+	if (!bhash_is_valid(doc_index)) { return NULL; }
+	buxn_ls_str_t file_content = ctx->workspace.docs.values[doc_index];
+
+	yyjson_val* position = BIO_LSP_JSON_GET_LIT(request, "position");
+	int line = yyjson_get_int(BIO_LSP_JSON_GET_LIT(position, "line"));
+	int character = yyjson_get_int(BIO_LSP_JSON_GET_LIT(position, "character"));
+
+	barray_clear(ctx->completion_lines);
+	buxn_ls_line_slice_t slice = buxn_ls_split_file(file_content, &ctx->completion_lines);
+	if (line >= slice.num_lines) { return NULL; }
+
+	// Convert from LSP offset to byte offset
+	buxn_ls_str_t line_content = slice.lines[line];
+	ptrdiff_t byte_offset = bio_lsp_byte_offset_from_utf16_offset(
+		line_content.chars, line_content.len, character
+	);
+
+	// Find the completion prefix
+	ptrdiff_t completion_start;
+	for (completion_start = byte_offset - 1; completion_start >= 0; --completion_start) {
+		char ch = line_content.chars[completion_start];
+		if (ch == ' ' || ch == '\t') {
+			completion_start += 1;
+			break;
+		}
+	}
+	if (completion_start < 0) { completion_start = 0; }
+
+	buxn_ls_str_t completion_prefix = {
+		.chars = line_content.chars + completion_start,
+		.len = byte_offset - completion_start,
+	};
+	if (completion_prefix.len == 0) { return NULL; }
+	BIO_DEBUG("Completion prefix: %.*s", (int)completion_prefix.len, completion_prefix.chars);
+
+	bhash_index_t src_node_index = bhash_find(&ctx->analyzer.current_ctx->sources, path);
+	if (!bhash_is_valid(src_node_index)) { return NULL; }
+	buxn_ls_src_node_t* src_node = ctx->analyzer.current_ctx->sources.values[src_node_index];
+
+	// Stop analysis since the doc is incomplete
+	bio_cancel_timer(ctx->analyze_delay_timer);
+	buxn_ls_completion_ctx_t completion_ctx = {
+		.source = src_node,
+		.prefix = completion_prefix,
+	};
+	return buxn_ls_build_completion_list(&completion_ctx, response);
+}
+
+static yyjson_mut_val*
 buxn_ls_handle_shutdown(
 	buxn_ls_ctx_t* ctx,
 	yyjson_val* request,
@@ -576,6 +643,7 @@ static const buxn_ls_handler_entry_t BUXN_LS_REQUEST_HANDLERS[] = {
 	{ "textDocument/references", buxn_ls_handle_find_references },
 	{ "textDocument/hover", buxn_ls_handle_hover },
 	{ "textDocument/documentSymbol", buxn_ls_handle_list_doc_symbols },
+	{ "textDocument/completion", buxn_ls_handle_completion },
 	{ "workspace/symbol", buxn_ls_handle_list_workspace_symbols },
 };
 

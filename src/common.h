@@ -5,6 +5,7 @@
 #include <string.h>
 #include <bhash.h>
 #include <barena.h>
+#include <barray.h>
 
 typedef int (*bio_entry_fn_t)(void* userdata);
 
@@ -12,6 +13,11 @@ typedef struct {
 	const char* chars;
 	size_t len;
 } buxn_ls_str_t;
+
+typedef struct {
+	buxn_ls_str_t* lines;
+	int num_lines;
+} buxn_ls_line_slice_t;
 
 int
 bio_enter(bio_entry_fn_t entry, void* userdata);
@@ -56,5 +62,8 @@ buxn_ls_str_eq(const void* lhs, const void* rhs, size_t size) {
 	(void)size;
 	return strcmp(*(const char**)lhs, *(const char**)rhs) == 0;
 }
+
+buxn_ls_line_slice_t
+buxn_ls_split_file(buxn_ls_str_t content, barray(buxn_ls_str_t)* lines);
 
 #endif

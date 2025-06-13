@@ -63,3 +63,46 @@ bio_enter(bio_entry_fn_t entry, void* userdata) {
 
 	return entry_data.exit_code;
 }
+
+buxn_ls_line_slice_t
+buxn_ls_split_file(buxn_ls_str_t content, barray(buxn_ls_str_t)* lines) {
+	buxn_ls_str_t line = { .chars = content.chars, };
+	int first_line_index = (int)barray_len(*lines);
+	int num_lines = 0;
+	size_t start_index = 0;
+	for (size_t char_index = 0; char_index < content.len; ++char_index) {
+		char ch = content.chars[char_index];
+		if (ch == '\n') {
+			line.len = char_index - start_index;
+			barray_push(*lines, line, NULL);
+			++num_lines;
+			line.chars = content.chars + char_index + 1;
+			start_index = char_index + 1;
+		} else if (ch == '\r') {
+			if (char_index < content.len - 1 && content.chars[char_index + 1] == '\n') {
+				line.len = char_index - start_index;
+				barray_push(*lines, line, NULL);
+				++num_lines;
+				line.chars = content.chars + char_index + 2;
+				start_index = char_index + 2;
+			} else {
+				line.len = char_index - start_index;
+				barray_push(*lines, line, NULL);
+				++num_lines;
+				line.chars = content.chars + char_index + 1;
+				start_index = char_index + 1;
+			}
+		}
+	}
+	// Last line
+	if (start_index < content.len) {
+		line.len = content.len - start_index;
+		barray_push(*lines, line, NULL);
+		++num_lines;
+	}
+
+	return (buxn_ls_line_slice_t){
+		.lines = &(*lines)[first_line_index],
+		.num_lines = num_lines,
+	};
+}

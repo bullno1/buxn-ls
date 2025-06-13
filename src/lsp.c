@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <limits.h>
+#include <utf8proc.h>
 
 typedef enum {
 	BIO_LSP_BAD_HEADER,
@@ -323,4 +324,58 @@ bio_lsp_send_msg(
 end:
 	alc->free(alc->ctx, body);
 	return success;
+}
+
+ptrdiff_t
+bio_lsp_utf16_offset_from_byte_offset(const char* utf8str, size_t str_size, ptrdiff_t byte_offset) {
+	utf8proc_ssize_t itr = 0;
+	utf8proc_ssize_t line_len = (utf8proc_ssize_t)str_size;
+	ptrdiff_t code_unit_offset = 0;
+	while (true) {
+		if (itr >= byte_offset || itr >= line_len) { break; }
+
+		utf8proc_int32_t codepoint;
+		utf8proc_ssize_t num_bytes = utf8proc_iterate(
+			(const utf8proc_uint8_t*)utf8str + itr,
+			line_len - itr,
+			&codepoint
+		);
+
+		if (num_bytes < 0) {
+			// If an invalid codepoint is encountered, skip the byte
+			itr += 1;
+		} else {
+			itr += num_bytes;
+			code_unit_offset += (codepoint <= 0xFFFF ? 1 : 2);
+		}
+	}
+
+	return code_unit_offset;
+}
+
+ptrdiff_t
+bio_lsp_byte_offset_from_utf16_offset(const char* utf8str, size_t str_size, ptrdiff_t utf16_offset) {
+	utf8proc_ssize_t itr = 0;
+	utf8proc_ssize_t line_len = (utf8proc_ssize_t)str_size;
+	ptrdiff_t code_unit_offset = 0;
+	while (true) {
+		if (code_unit_offset >= utf16_offset || itr >= line_len) { break; }
+
+		utf8proc_int32_t codepoint;
+		utf8proc_ssize_t num_bytes = utf8proc_iterate(
+			(const utf8proc_uint8_t*)utf8str + itr,
+			line_len - itr,
+			&codepoint
+		);
+
+		if (num_bytes < 0) {
+			// If an invalid codepoint is encountered, skip the byte
+			itr += 1;
+		} else {
+			itr += num_bytes;
+			code_unit_offset += (codepoint <= 0xFFFF ? 1 : 2);
+		}
+	}
+
+	return itr;
 }

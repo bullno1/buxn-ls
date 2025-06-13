@@ -2,13 +2,13 @@
 #include "workspace.h"
 #include "common.h"
 #include "bmacro.h"
+#include "lsp.h"
 #include <buxn/asm/asm.h>
 #include <bio/file.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <limits.h>
 #include <assert.h>
-#include <utf8proc.h>
 
 struct buxn_asm_ctx_s {
 	buxn_ls_src_node_t* entry_node;
@@ -26,7 +26,7 @@ buxn_ls_cmp_diagnostic(const void* lhs, const void* rhs) {
 }
 
 buxn_ls_line_slice_t
-buxn_ls_split_file(buxn_ls_analyzer_t* analyzer, const char* filename) {
+buxn_ls_analyzer_split_file(buxn_ls_analyzer_t* analyzer, const char* filename) {
 	bhash_index_t file_index = bhash_find(&analyzer->files, filename);
 	if (!bhash_is_valid(file_index)) {  // Invalid file
 		return (buxn_ls_line_slice_t){
@@ -46,48 +46,11 @@ buxn_ls_split_file(buxn_ls_analyzer_t* analyzer, const char* filename) {
 	BIO_DEBUG("Splitting file %s", filename);
 
 	buxn_ls_str_t content = analyzer->files.values[file_index].content;
-	buxn_ls_str_t line = { .chars = content.chars, };
-	int first_line_index = (int)barray_len(analyzer->lines);
-	int num_lines = 0;
-	size_t start_index = 0;
-	for (size_t char_index = 0; char_index < content.len; ++char_index) {
-		char ch = content.chars[char_index];
-		if (ch == '\n') {
-			line.len = char_index - start_index;
-			barray_push(analyzer->lines, line, NULL);
-			++num_lines;
-			line.chars = content.chars + char_index + 1;
-			start_index = char_index + 1;
-		} else if (ch == '\r') {
-			if (char_index < content.len - 1 && content.chars[char_index + 1] == '\n') {
-				line.len = char_index - start_index;
-				barray_push(analyzer->lines, line, NULL);
-				++num_lines;
-				line.chars = content.chars + char_index + 2;
-				start_index = char_index + 2;
-			} else {
-				line.len = char_index - start_index;
-				barray_push(analyzer->lines, line, NULL);
-				++num_lines;
-				line.chars = content.chars + char_index + 1;
-				start_index = char_index + 1;
-			}
-		}
-	}
-	// Last line
-	if (start_index < content.len) {
-		line.len = content.len - start_index;
-		barray_push(analyzer->lines, line, NULL);
-		++num_lines;
-	}
+	file->first_line_index = (int)barray_len(analyzer->lines);
+	buxn_ls_line_slice_t slice = buxn_ls_split_file(content, &analyzer->lines);
+	file->num_lines = slice.num_lines;
 
-	file->first_line_index = first_line_index;
-	file->num_lines = num_lines;
-
-	return (buxn_ls_line_slice_t){
-		.lines = &analyzer->lines[first_line_index],
-		.num_lines = num_lines,
-	};
+	return slice;
 }
 
 static bio_lsp_position_t
@@ -96,7 +59,7 @@ buxn_ls_convert_position(
 	const char* filename,
 	buxn_asm_file_pos_t basm_pos
 ) {
-	buxn_ls_line_slice_t line_slice = buxn_ls_split_file(analyzer, filename);
+	buxn_ls_line_slice_t line_slice = buxn_ls_analyzer_split_file(analyzer, filename);
 	bio_lsp_position_t lsp_pos = { .line = basm_pos.line - 1 };
 
 	if (lsp_pos.line >= line_slice.num_lines) {
@@ -106,29 +69,9 @@ buxn_ls_convert_position(
 	}
 
 	buxn_ls_str_t line = line_slice.lines[lsp_pos.line];
-	int utf8_offset = basm_pos.col - 1;
-	utf8proc_ssize_t byte_offset = 0;
-	utf8proc_ssize_t line_len = line.len;
-	int code_unit_offset = 0;
-	while (true) {
-		if (byte_offset >= utf8_offset || byte_offset >= line_len) { break; }
-
-		utf8proc_int32_t codepoint;
-		utf8proc_ssize_t num_bytes = utf8proc_iterate(
-			(const utf8proc_uint8_t*)line.chars + byte_offset,
-			line_len - byte_offset,
-			&codepoint
-		);
-
-		if (num_bytes < 0) {
-			BIO_WARN("Invalid codepoint encountered on line %d", lsp_pos.line + 1);
-			break;
-		}
-
-		byte_offset += num_bytes;
-		code_unit_offset += (codepoint <= 0xFFFF ? 1 : 2);
-	}
-	lsp_pos.character = code_unit_offset;
+	lsp_pos.character = bio_lsp_utf16_offset_from_byte_offset(
+		line.chars, line.len, basm_pos.col - 1
+	);
 
 	return lsp_pos;
 }

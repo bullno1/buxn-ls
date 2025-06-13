@@ -6,6 +6,7 @@ set(SOURCES
 	"ls.c"
 	"lsp.c"
 	"analyze.c"
+	"completion.c"
 	"workspace.c"
 	"libs.c"
 )

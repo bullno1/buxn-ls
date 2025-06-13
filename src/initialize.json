@@ -10,6 +10,20 @@
 		"documentSymbolProvider": true,
 		"workspaceSymbolProvider": {
 			"resolveProvider": false
+		},
+		"completionProvider": {
+			"triggerCharacters": [
+				",", "_",
+				".", "-",
+				";", "=",
+				"!", "?",
+				"/",
+				"|", "$"
+			],
+			"allCommitCharacters": [
+				" "
+			],
+			"resolveProvider": false
 		}
 	},
 	"serverInfo": {

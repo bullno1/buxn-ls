@@ -109,4 +109,10 @@ bio_lsp_send_msg(
 	bio_error_t* error
 );
 
+ptrdiff_t
+bio_lsp_utf16_offset_from_byte_offset(const char* utf8str, size_t str_size, ptrdiff_t byte_offset);
+
+ptrdiff_t
+bio_lsp_byte_offset_from_utf16_offset(const char* utf8str, size_t str_size, ptrdiff_t utf16_offset);
+
 #endif
