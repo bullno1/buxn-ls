@@ -29,6 +29,7 @@ typedef struct {
 	bool should_terminate;
 } ctrlc_ctx_t;
 
+#ifdef __linux__
 static void
 ctrlc_handler(void* userdata) {
 	ctrlc_ctx_t* ctx = userdata;
@@ -52,6 +53,7 @@ ctrlc_handler(void* userdata) {
 	bio_net_close(ctx->server_sock, NULL);
 	bio_fclose(sig_file, NULL);
 }
+#endif
 
 static void
 ls_wrapper(void* userdata) {
@@ -94,8 +96,10 @@ server_entry(void* userdata) {
 	ctrlc_ctx_t ctrlc = {
 		.server_sock = server_sock,
 	};
+#ifdef __linux__
 	(void)ctrlc_handler;
 	bio_coro_t ctrlc_handler_coro = bio_spawn(ctrlc_handler, &ctrlc);
+#endif
 
 	server_ctx_t ctx = { 0 };
 	bhash_init_set(&ctx.clients, bhash_config_default());
@@ -135,7 +139,9 @@ server_entry(void* userdata) {
 	}
 	bhash_cleanup(&ctx.clients);
 
+#ifdef __linux__
 	bio_join(ctrlc_handler_coro);
+#endif
 	barena_pool_cleanup(&pool);
 
 	return 0;

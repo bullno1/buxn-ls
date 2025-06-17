@@ -825,7 +825,9 @@ buxn_ls(bio_lsp_conn_t* conn, struct barena_pool_s* pool) {
 
 	exit_code = 0;
 end:
-	buxn_ls_cleanup(&ctx);
+	if (initialized) {
+		buxn_ls_cleanup(&ctx);
+	}
 	buxn_ls_free(recv_buf);
 
 	BIO_DEBUG("Shutdown");
