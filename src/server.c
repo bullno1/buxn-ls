@@ -40,6 +40,7 @@ ls_wrapper(void* userdata) {
 	bio_io_buffer_t out_buf = bio_make_socket_write_buffer(client, BUXN_LS_IO_BUF_SIZE);
 
 	buxn_ls(in_buf, out_buf, args.pool);
+	bio_set_coro_name(NULL);  // The stack-allocated name is invalid at this point
 
 	bio_destroy_buffer(in_buf);
 	bio_destroy_buffer(out_buf);
