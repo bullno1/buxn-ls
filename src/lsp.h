@@ -4,6 +4,7 @@
 #include <bio/bio.h>
 #include <bio/net.h>
 #include <bio/file.h>
+#include <bio/buffering.h>
 
 #define BIO_LSP_LIT_STRLEN(X) (sizeof(X "") - 1)
 
@@ -16,32 +17,7 @@
 #define BIO_LSP_STR_STARTS_WITH(STR, PREFIX) \
 	(strncmp((STR), PREFIX, BIO_LSP_LIT_STRLEN(PREFIX)) == 0)
 
-typedef struct bio_lsp_conn_s bio_lsp_conn_t;
 struct yyjson_alc;
-
-struct bio_lsp_conn_s {
-	size_t (*recv)(bio_lsp_conn_t* conn, void* buf, size_t size, bio_error_t* error);
-	size_t (*send)(bio_lsp_conn_t* conn, const void* buf, size_t size, bio_error_t* error);
-};
-
-typedef struct {
-	bio_lsp_conn_t conn;
-	bio_socket_t socket;
-} bio_lsp_socket_conn_t;
-
-typedef struct {
-	bio_lsp_conn_t conn;
-	bio_file_t in;
-	bio_file_t out;
-} bio_lsp_file_conn_t;
-
-typedef struct {
-	bio_lsp_conn_t* conn;
-	size_t next_msg_size;
-	char* line_end;
-	char line_buf[1024];
-	size_t buf_size;
-} bio_lsp_msg_reader_t;
 
 typedef enum {
 	BIO_LSP_MSG_REQUEST,
@@ -84,26 +60,19 @@ typedef struct {
 	bio_lsp_range_t range;
 } bio_lsp_location_t;
 
-bio_lsp_conn_t*
-bio_lsp_init_socket_conn(bio_lsp_socket_conn_t* conn, bio_socket_t socket);
-
-bio_lsp_conn_t*
-bio_lsp_init_file_conn(bio_lsp_file_conn_t* conn, bio_file_t input, bio_file_t output);
-
 size_t
-bio_lsp_recv_msg_header(bio_lsp_msg_reader_t* reader, bio_error_t* error);
+bio_lsp_recv_msg_header(bio_io_buffer_t in_buf, bio_error_t* error);
 
 bool
-bio_lsp_recv_msg(
-	bio_lsp_msg_reader_t* reader,
-	char* recv_buf,
+bio_lsp_parse_msg(
+	char* buf, size_t content_length,
 	bio_lsp_in_msg_t* msg,
 	bio_error_t* error
 );
 
 bool
 bio_lsp_send_msg(
-	bio_lsp_conn_t* conn,
+	bio_io_buffer_t out_buf,
 	struct yyjson_alc* alc,
 	const bio_lsp_out_msg_t* msg,
 	bio_error_t* error

@@ -10,13 +10,15 @@
 #include <yyjson.h>
 #include <yuarel.h>
 #include <bio/timer.h>
+#include <bio/file.h>
 
 static const bio_time_t BUXN_LS_ANALYZE_DELAY_MS = 200;
 
 typedef BHASH_SET(char*) buxn_ls_str_set_t;
 
 typedef struct {
-	bio_lsp_conn_t* conn;
+	bio_io_buffer_t in_buf;
+	bio_io_buffer_t out_buf;
 	bool should_terminate;
 	yyjson_alc json_allocator;
 	char name_buf[sizeof("ls:2147483647")];
@@ -42,6 +44,11 @@ typedef struct {
 	const char* method;
 	buxn_ls_request_handler_t handler;
 } buxn_ls_handler_entry_t;
+
+typedef struct {
+	size_t size;
+	char* data;
+} buxn_ls_recv_buf_t;
 
 static void*
 buxn_ls_json_realloc(void* ctx, void* ptr, size_t old_size, size_t new_size) {
@@ -83,7 +90,7 @@ buxn_ls_begin_msg(buxn_ls_ctx_t* ctx, bio_lsp_msg_type_t type, const bio_lsp_in_
 static bool
 buxn_ls_end_msg(buxn_ls_ctx_t* ctx, const bio_lsp_out_msg_t* msg) {
 	bio_error_t error = { 0 };
-	bool success = bio_lsp_send_msg(ctx->conn, &ctx->json_allocator, msg, &error);
+	bool success = bio_lsp_send_msg(ctx->out_buf, &ctx->json_allocator, msg, &error);
 	yyjson_mut_doc_free(msg->doc);
 
 	if (!success) {
@@ -452,9 +459,15 @@ buxn_ls_handle_hover(
 
 	buxn_ls_str_t line = slice.lines[def->range.start.line];
 	yyjson_mut_val* result = yyjson_mut_obj(response);
-	yyjson_mut_obj_add_strn(response, result, "contents", line.chars, line.len);
-	yyjson_mut_val* range_obj = yyjson_mut_obj_add_obj(response, result, "range");
-	buxn_ls_serialize_lsp_range(response, range_obj, &def->range);
+	{
+		yyjson_mut_val* content_obj = yyjson_mut_obj_add_obj(response, result, "contents");
+		{
+			yyjson_mut_obj_add_str(response, content_obj, "kind", "plaintext");
+			yyjson_mut_obj_add_strn(response, content_obj, "value", line.chars, line.len);
+		}
+		yyjson_mut_val* range_obj = yyjson_mut_obj_add_obj(response, result, "range");
+		buxn_ls_serialize_lsp_range(response, range_obj, &def->range);
+	}
 	return result;
 }
 
@@ -702,18 +715,46 @@ buxn_ls_handle_msg(buxn_ls_ctx_t* ctx, const bio_lsp_in_msg_t* in_msg) {
 	}
 }
 
-int
-buxn_ls(bio_lsp_conn_t* conn, struct barena_pool_s* pool) {
-	bio_lsp_msg_reader_t reader = { .conn = conn };
+static bool
+buxn_ls_recv_msg(
+	bio_io_buffer_t in_buf,
+	buxn_ls_recv_buf_t* recv_buf,
+	bio_lsp_in_msg_t* msg,
+	bio_error_t* error
+) {
+	size_t content_length;
+	if ((content_length = bio_lsp_recv_msg_header(in_buf, error)) == 0) {
+		return false;
+	}
 
+	size_t required_recv_buf_size = yyjson_read_max_memory_usage(content_length, YYJSON_READ_INSITU) + content_length;
+	if (required_recv_buf_size > recv_buf->size) {
+		buxn_ls_free(recv_buf->data);
+		recv_buf->data = buxn_ls_malloc(required_recv_buf_size);
+		BIO_DEBUG("Resize recv buffer: %zu -> %zu", recv_buf->size, required_recv_buf_size);
+		recv_buf->size = required_recv_buf_size;
+	}
+
+	if (bio_buffered_read_exactly(in_buf, recv_buf->data, content_length, error) != content_length) {
+		return false;
+	}
+
+	return bio_lsp_parse_msg(recv_buf->data, content_length, msg, error);
+}
+
+int
+buxn_ls(
+	bio_io_buffer_t in_buf,
+	bio_io_buffer_t out_buf,
+	struct barena_pool_s* pool
+) {
 	int exit_code = 1;
 	bio_error_t error = { 0 };
-	void* recv_buf = NULL;
-	size_t recv_buf_size = 0;
-	size_t required_recv_buf_size = 0;
+	buxn_ls_recv_buf_t recv_buf = { 0 };
 	bio_lsp_in_msg_t in_msg = { 0 };
 	buxn_ls_ctx_t ctx = {
-		.conn = conn,
+		.in_buf = in_buf,
+		.out_buf = out_buf,
 		.json_allocator = {
 			.realloc = buxn_ls_json_realloc,
 			.malloc = buxn_ls_json_malloc,
@@ -725,18 +766,7 @@ buxn_ls(bio_lsp_conn_t* conn, struct barena_pool_s* pool) {
 
 	bool initialized = false;
 	while (!initialized) {
-		if ((required_recv_buf_size = bio_lsp_recv_msg_header(&reader, &error)) == 0) {
-			BIO_ERROR("Error while reading header: " BIO_ERROR_FMT, BIO_ERROR_FMT_ARGS(&error));
-			goto end;
-		}
-		if (required_recv_buf_size > recv_buf_size) {
-			buxn_ls_free(recv_buf);
-			recv_buf = buxn_ls_malloc(required_recv_buf_size);
-			BIO_DEBUG("Resize recv buffer: %zu -> %zu", recv_buf_size, required_recv_buf_size);
-			recv_buf_size = required_recv_buf_size;
-		}
-
-		if (!bio_lsp_recv_msg(&reader, recv_buf, &in_msg, &error)) {
+		if (!buxn_ls_recv_msg(in_buf, &recv_buf, &in_msg, &error)) {
 			BIO_ERROR("Error while reading message: " BIO_ERROR_FMT, BIO_ERROR_FMT_ARGS(&error));
 			goto end;
 		}
@@ -770,18 +800,7 @@ buxn_ls(bio_lsp_conn_t* conn, struct barena_pool_s* pool) {
 
 	initialized = false;
 	while (!initialized) {
-		if ((required_recv_buf_size = bio_lsp_recv_msg_header(&reader, &error)) == 0) {
-			BIO_ERROR("Error while reading header: " BIO_ERROR_FMT, BIO_ERROR_FMT_ARGS(&error));
-			goto end;
-		}
-		if (required_recv_buf_size > recv_buf_size) {
-			buxn_ls_free(recv_buf);
-			recv_buf = buxn_ls_malloc(required_recv_buf_size);
-			BIO_DEBUG("Resize recv buffer: %zu -> %zu", recv_buf_size, required_recv_buf_size);
-			recv_buf_size = required_recv_buf_size;
-		}
-
-		if (!bio_lsp_recv_msg(&reader, recv_buf, &in_msg, &error)) {
+		if (!buxn_ls_recv_msg(in_buf, &recv_buf, &in_msg, &error)) {
 			BIO_ERROR("Error while reading message: " BIO_ERROR_FMT, BIO_ERROR_FMT_ARGS(&error));
 			goto end;
 		}
@@ -804,18 +823,7 @@ buxn_ls(bio_lsp_conn_t* conn, struct barena_pool_s* pool) {
 	BIO_DEBUG("Initialized");
 
 	while (!ctx.should_terminate) {
-		if ((required_recv_buf_size = bio_lsp_recv_msg_header(&reader, &error)) == 0) {
-			BIO_ERROR("Error while reading header: " BIO_ERROR_FMT, BIO_ERROR_FMT_ARGS(&error));
-			goto end;
-		}
-		if (required_recv_buf_size > recv_buf_size) {
-			buxn_ls_free(recv_buf);
-			recv_buf = buxn_ls_malloc(required_recv_buf_size);
-			BIO_DEBUG("Resize recv buffer: %zu -> %zu", recv_buf_size, required_recv_buf_size);
-			recv_buf_size = required_recv_buf_size;
-		}
-
-		if (!bio_lsp_recv_msg(&reader, recv_buf, &in_msg, &error)) {
+		if (!buxn_ls_recv_msg(in_buf, &recv_buf, &in_msg, &error)) {
 			BIO_ERROR("Error while reading message: " BIO_ERROR_FMT, BIO_ERROR_FMT_ARGS(&error));
 			goto end;
 		}
@@ -828,7 +836,7 @@ end:
 	if (initialized) {
 		buxn_ls_cleanup(&ctx);
 	}
-	buxn_ls_free(recv_buf);
+	buxn_ls_free(recv_buf.data);
 
 	BIO_DEBUG("Shutdown");
 	return exit_code;
@@ -837,10 +845,15 @@ end:
 int
 buxn_ls_stdio(void* userdata) {
 	(void)userdata;
-	bio_lsp_file_conn_t conn;
 	barena_pool_t pool;
 	barena_pool_init(&pool, 1);
-	int exit_code = buxn_ls(bio_lsp_init_file_conn(&conn, BIO_STDIN, BIO_STDOUT), &pool);
+	bio_io_buffer_t in_buf = bio_make_file_read_buffer(BIO_STDIN, BUXN_LS_IO_BUF_SIZE);
+	bio_io_buffer_t out_buf = bio_make_file_write_buffer(BIO_STDOUT, BUXN_LS_IO_BUF_SIZE, false);
+
+	int exit_code = buxn_ls(in_buf, out_buf, &pool);
+
+	bio_destroy_buffer(in_buf);
+	bio_destroy_buffer(out_buf);
 	barena_pool_cleanup(&pool);
 	return exit_code;
 }

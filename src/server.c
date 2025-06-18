@@ -36,8 +36,14 @@ ls_wrapper(void* userdata) {
 	bio_socket_t client = args.client;
 	bio_raise_signal(args.ready_sig);
 
-	bio_lsp_socket_conn_t conn;
-	buxn_ls(bio_lsp_init_socket_conn(&conn, client), args.pool);
+	bio_io_buffer_t in_buf = bio_make_socket_read_buffer(client, BUXN_LS_IO_BUF_SIZE);
+	bio_io_buffer_t out_buf = bio_make_socket_write_buffer(client, BUXN_LS_IO_BUF_SIZE);
+
+	buxn_ls(in_buf, out_buf, args.pool);
+
+	bio_destroy_buffer(in_buf);
+	bio_destroy_buffer(out_buf);
+
 	bio_net_close(client, NULL);
 	bio_coro_t self = bio_current_coro();
 	bhash_remove(&args.server_ctx->clients, self);
