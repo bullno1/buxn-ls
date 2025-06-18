@@ -13,7 +13,7 @@ bio_entry_wrapper(void* userdata) {
 	bio_set_coro_name("main");
 	bio_entry_data_t* entry_data = userdata;
 
-	bio_logger_t logger = bio_add_file_logger(
+	bio_add_file_logger(
 		BIO_LOG_LEVEL_TRACE,
 		&(bio_file_logger_options_t){
 			.file = BIO_STDERR,
@@ -21,7 +21,6 @@ bio_entry_wrapper(void* userdata) {
 		}
 	);
 	entry_data->exit_code = entry_data->entry(entry_data->userdata);
-	bio_remove_logger(logger);
 }
 
 // TODO: Switch allocator on release
