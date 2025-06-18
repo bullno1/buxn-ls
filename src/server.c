@@ -1,10 +1,3 @@
-#ifdef __linux__
-#define _GNU_SOURCE
-#include <sys/signalfd.h>
-#include <signal.h>
-#include <bio/file.h>
-#endif
-
 #include "common.h"
 #include <string.h>
 #include <bio/net.h>
@@ -27,33 +20,15 @@ typedef struct {
 typedef struct {
 	bio_socket_t server_sock;
 	bool should_terminate;
-} ctrlc_ctx_t;
+} exit_ctx_t;
 
-#ifdef __linux__
 static void
-ctrlc_handler(void* userdata) {
-	ctrlc_ctx_t* ctx = userdata;
-
-	sigset_t mask, old;
-	sigemptyset(&mask);
-	sigaddset(&mask, SIGTERM);
-	sigaddset(&mask, SIGINT);
-	pthread_sigmask(SIG_BLOCK, &mask, &old);
-
-	int sigfd = signalfd(-1, &mask, SFD_CLOEXEC);
-	bio_file_t sig_file;
-	bio_fdopen(&sig_file, sigfd, NULL);
-	struct signalfd_siginfo ssi;
-	bio_fread(sig_file, &ssi, sizeof(ssi), NULL);
-	BIO_INFO("Received signal: %d", ssi.ssi_signo);
-
-	pthread_sigmask(SIG_SETMASK, &old, NULL);
-
+exit_handler(void* userdata) {
+	exit_ctx_t* ctx = userdata;
+	bio_wait_for_exit();
 	ctx->should_terminate = true;
 	bio_net_close(ctx->server_sock, NULL);
-	bio_fclose(sig_file, NULL);
 }
-#endif
 
 static void
 ls_wrapper(void* userdata) {
@@ -93,22 +68,17 @@ server_entry(void* userdata) {
 		return 1;
 	}
 
-	ctrlc_ctx_t ctrlc = {
-		.server_sock = server_sock,
-	};
-#ifdef __linux__
-	(void)ctrlc_handler;
-	bio_coro_t ctrlc_handler_coro = bio_spawn(ctrlc_handler, &ctrlc);
-#endif
+	exit_ctx_t exit_ctx = { .server_sock = server_sock };
+	bio_coro_t exit_handler_coro = bio_spawn(exit_handler, &exit_ctx);
 
 	server_ctx_t ctx = { 0 };
 	bhash_init_set(&ctx.clients, bhash_config_default());
 
 	BIO_INFO("Waiting for connection");
-	while (!ctrlc.should_terminate) {
+	while (!exit_ctx.should_terminate) {
 		bio_socket_t client;
 		if (!bio_net_accept(server_sock, &client, &error)) {
-			if (!ctrlc.should_terminate) {
+			if (!exit_ctx.should_terminate) {
 				BIO_ERROR(
 					"Could not accept connection: " BIO_ERROR_FMT,
 					BIO_ERROR_FMT_ARGS(&error)
@@ -139,9 +109,7 @@ server_entry(void* userdata) {
 	}
 	bhash_cleanup(&ctx.clients);
 
-#ifdef __linux__
-	bio_join(ctrlc_handler_coro);
-#endif
+	bio_join(exit_handler_coro);
 	barena_pool_cleanup(&pool);
 
 	return 0;
