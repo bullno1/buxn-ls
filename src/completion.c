@@ -3,6 +3,7 @@
 #include "lsp.h"
 #include <bmacro.h>
 #include <yyjson.h>
+#include <stdarg.h>
 
 typedef enum {
 	BUXN_LS_MATCH_ANY_SYMBOL,
@@ -30,6 +31,7 @@ typedef struct {
 
 typedef struct {
 	barena_t* arena;
+	buxn_ls_analyzer_t* analyzer;
 	buxn_ls_sym_filter_t filter;
 	buxn_ls_sym_format_type_t format_type;
 	bio_lsp_range_t edit_range;
@@ -76,6 +78,31 @@ buxn_ls_match_symbol(
 		&& memcmp(def->name.chars, filter->prefix.chars, filter->prefix.len) == 0;
 }
 
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((format(printf, 3, 4)))
+#endif
+static void
+buxn_ls_add_detail_fmt(
+	const buxn_ls_sym_visit_ctx_t* ctx,
+	yyjson_mut_val* item,
+	const char* fmt,
+	...
+) {
+	// TODO: use a reusable buffer and copy to arena instead of double formatting
+	va_list args, args_copy;
+	int strlen;
+	va_start(args, fmt);
+	va_copy(args_copy, args);
+	strlen = vsnprintf(NULL, 0, fmt, args_copy);
+	va_end(args_copy);
+
+	char* str = barena_memalign(ctx->arena, strlen + 1, _Alignof(char));
+	vsnprintf(str, strlen + 1, fmt, args);
+	yyjson_mut_obj_add_strn(ctx->doc, item, "detail", str, strlen);
+
+	va_end(args);
+}
+
 static void
 buxn_ls_visit_symbols(
 	const buxn_ls_sym_visit_ctx_t* ctx,
@@ -111,6 +138,38 @@ buxn_ls_visit_symbols(
 			yyjson_mut_obj_add_strn(ctx->doc, item, "label", suggestion.chars, suggestion.len);
 			yyjson_mut_obj_add_int(ctx->doc, item, "insertTextFormat", 1);  // PlainText
 			yyjson_mut_obj_add_int(ctx->doc, item, "insertTextMode", 1);  // asIs
+			switch (def->semantics) {
+				case BUXN_LS_SYMBOL_AS_VARIABLE:
+					yyjson_mut_obj_add_int(ctx->doc, item, "kind", 6);  // Variable
+					buxn_ls_add_detail_fmt(ctx, item, "|0x%04x", def->address);
+					break;
+				case BUXN_LS_SYMBOL_AS_SUBROUTINE: {
+					yyjson_mut_obj_add_int(ctx->doc, item, "kind", 3);  // Function
+					buxn_ls_line_slice_t slice = buxn_ls_analyzer_split_file(ctx->analyzer, src_node->filename);
+					if (def->range.start.line < slice.num_lines) {
+						buxn_ls_str_t line_content = slice.lines[def->range.start.line];
+						// TODO: cache these?
+						ptrdiff_t offset = bio_lsp_byte_offset_from_utf16_offset(
+							line_content.chars,
+							line_content.len,
+							def->range.end.character
+						);
+						buxn_ls_str_t signature = {
+							.chars = line_content.chars + offset,
+							.len = line_content.len - offset,
+						};
+						yyjson_mut_obj_add_strn(ctx->doc, item, "detail", signature.chars, signature.len);
+					}
+				} break;
+				case BUXN_LS_SYMBOL_AS_DEVICE_PORT:
+					yyjson_mut_obj_add_int(ctx->doc, item, "kind", 21);  // Constant
+					buxn_ls_add_detail_fmt(ctx, item, "|0x%02x", def->address);
+					break;
+				case BUXN_LS_SYMBOL_AS_ENUM:
+					yyjson_mut_obj_add_int(ctx->doc, item, "kind", 20);  // Enum member
+					buxn_ls_add_detail_fmt(ctx, item, "0x%04x", def->address);
+					break;
+			}
 			yyjson_mut_val* text_edit = yyjson_mut_obj_add_obj(ctx->doc, item, "textEdit");
 			{
 				yyjson_mut_obj_add_strn(ctx->doc, text_edit, "newText", suggestion.chars, suggestion.len);
@@ -317,6 +376,7 @@ buxn_ls_build_completion_list(
 	buxn_ls_visit_symbols(
 		&(buxn_ls_sym_visit_ctx_t){
 			.arena = ctx->arena,
+			.analyzer = ctx->analyzer,
 			.filter = filter,
 			.format_type = format_type,
 			.doc = response,

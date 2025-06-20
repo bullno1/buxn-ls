@@ -613,6 +613,7 @@ buxn_ls_handle_completion(
 	bio_cancel_timer(ctx->analyze_delay_timer);
 	buxn_ls_completion_ctx_t completion_ctx = {
 		.arena = &ctx->request_arena,
+		.analyzer = &ctx->analyzer,
 		.source = src_node,
 		.line_content = line_content,
 		.prefix = completion_prefix,
