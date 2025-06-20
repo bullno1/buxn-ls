@@ -212,7 +212,10 @@ buxn_ls_make_sym_node(
 	);
 	*sym_node = (buxn_ls_sym_node_t){
 		.type = sym->type,
-		.name = sym->name,
+		.name = {
+			.chars = sym->name,
+			.len = strlen(sym->name),
+		},
 		.source = src_node,
 		.range = buxn_ls_convert_range(
 			analyzer, sym->region.filename, sym->region.range

@@ -492,7 +492,7 @@ buxn_ls_handle_list_doc_symbols(
 		sym = sym->next
 	) {
 		yyjson_mut_val* sym_obj = yyjson_mut_arr_add_obj(response, result);
-		yyjson_mut_obj_add_str(response, sym_obj, "name", sym->name);
+		yyjson_mut_obj_add_strn(response, sym_obj, "name", sym->name.chars, sym->name.len);
 		yyjson_mut_obj_add_int(
 			response, sym_obj,
 			"kind", buxn_ls_convert_symbol_semantics(sym->semantics)
@@ -533,10 +533,10 @@ buxn_ls_handle_list_workspace_symbols(
 			sym != NULL;
 			sym = sym->next
 		) {
-			if (strncmp(sym->name, query, query_len) != 0) { continue; }
+			if (strncmp(sym->name.chars, query, query_len) != 0) { continue; }
 
 			yyjson_mut_val* sym_obj = yyjson_mut_arr_add_obj(response, result);
-			yyjson_mut_obj_add_str(response, sym_obj, "name", sym->name);
+			yyjson_mut_obj_add_strn(response, sym_obj, "name", sym->name.chars, sym->name.len);
 
 			yyjson_mut_obj_add_int(
 				response, sym_obj,

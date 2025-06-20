@@ -41,7 +41,7 @@ typedef struct buxn_ls_sym_node_s buxn_ls_sym_node_t;
 struct buxn_ls_sym_node_s {
 	buxn_ls_sym_node_t* next;
 
-	const char* name;
+	buxn_ls_str_t name;
 	buxn_ls_src_node_t* source;
 	buxn_asm_sym_type_t type;
 	buxn_ls_symbol_semantics_t semantics;

@@ -72,9 +72,8 @@ buxn_ls_match_symbol(
 		}
 	}
 
-	size_t name_len = strlen(def->name);
-	return name_len >= filter->prefix.len
-		&& memcmp(def->name, filter->prefix.chars, filter->prefix.len) == 0;
+	return def->name.len >= filter->prefix.len
+		&& memcmp(def->name.chars, filter->prefix.chars, filter->prefix.len) == 0;
 }
 
 static void
@@ -88,16 +87,13 @@ buxn_ls_visit_symbols(
 		def = def->next
 	) {
 		if (buxn_ls_match_symbol(def, &ctx->filter)) {
-			buxn_ls_str_t suggestion = {
-				.chars = def->name,
-				.len = strlen(def->name),
-			};
+			buxn_ls_str_t suggestion = def->name;
 			switch (ctx->format_type) {
 				case BUXN_LS_FORMAT_FULL_NAME:
 					break;
 				case BUXN_LS_FORMAT_LOCAL_NAME:
 					for (size_t i = 0; i < suggestion.len; ++i) {
-						char ch = def->name[i];
+						char ch = def->name.chars[i];
 						if (ch == '/') {
 							suggestion.chars += i + 1;
 							suggestion.len -= (i + 1);
@@ -106,8 +102,8 @@ buxn_ls_visit_symbols(
 					break;
 			}
 			BIO_DEBUG(
-				"Candidate: %s => %.*s",
-				def->name,
+				"Candidate: %.*s => %.*s",
+				(int)def->name.len, def->name.chars,
 				(int)suggestion.len, suggestion.chars
 			);
 
@@ -255,12 +251,10 @@ buxn_ls_build_completion_list(
 
 			if (most_recent_label == NULL) { return NULL; }
 
-			// TODO: use buxn_ls_str instead
-			int name_len = (int)strlen(most_recent_label->name);
 			int i;
 			char ch;
-			for (i = 0; i < name_len; ++i) {
-				ch = most_recent_label->name[i];
+			for (i = 0; i < (int)most_recent_label->name.len; ++i) {
+				ch = most_recent_label->name.chars[i];
 				if (ch == '/') {
 					break;
 				}
@@ -279,7 +273,7 @@ buxn_ls_build_completion_list(
 			// So the safe thing to do is to just copy the scope then insert
 			// a slash of or own if needed.
 			char* parent_prefix = barena_memalign(ctx->arena, i + 1, _Alignof(char));
-			memcpy(parent_prefix, most_recent_label->name, i);
+			memcpy(parent_prefix, most_recent_label->name.chars, i);
 			parent_prefix[i] = '/';
 
 			filter.prefix = (buxn_ls_str_t) {
