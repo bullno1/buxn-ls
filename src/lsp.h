@@ -84,4 +84,13 @@ bio_lsp_utf16_offset_from_byte_offset(const char* utf8str, size_t str_size, ptrd
 ptrdiff_t
 bio_lsp_byte_offset_from_utf16_offset(const char* utf8str, size_t str_size, ptrdiff_t utf16_offset);
 
+static inline int
+bio_lsp_cmp_pos(bio_lsp_position_t lhs, bio_lsp_position_t rhs) {
+	if (lhs.line == rhs.line) {
+		return lhs.character - rhs.character;
+	} else {
+		return lhs.line - rhs.line;
+	}
+}
+
 #endif

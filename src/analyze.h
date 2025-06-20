@@ -46,6 +46,7 @@ struct buxn_ls_sym_node_s {
 	buxn_asm_sym_type_t type;
 	buxn_ls_symbol_semantics_t semantics;
 	bio_lsp_range_t range;
+	uint16_t address;
 
 	buxn_ls_node_base_t base;
 };

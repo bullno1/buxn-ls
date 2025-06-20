@@ -1,8 +1,8 @@
 #include "analyze.h"
 #include "workspace.h"
 #include "common.h"
-#include "bmacro.h"
 #include "lsp.h"
+#include <bmacro.h>
 #include <buxn/asm/asm.h>
 #include <bio/file.h>
 #include <stdio.h>
@@ -452,7 +452,6 @@ buxn_asm_put_rom(buxn_asm_ctx_t* ctx, uint16_t addr, uint8_t value) {
 
 void
 buxn_asm_put_symbol(buxn_asm_ctx_t* ctx, uint16_t addr, const buxn_asm_sym_t* sym) {
-	(void)addr;
 	// When an address reference is 16 bit, there will be two identical symbols
 	// emitted for both bytes.
 	// We should only consider the first symbol.
@@ -504,6 +503,8 @@ buxn_asm_put_symbol(buxn_asm_ctx_t* ctx, uint16_t addr, const buxn_asm_sym_t* sy
 				sym_node->next = sym_node->source->definitions;
 				sym_node->source->definitions = sym_node;
 				if (sym->type == BUXN_ASM_SYM_LABEL) {
+					sym_node->address = addr;
+
 					if (addr <= 0x00ff) {  // Zero-page
 						buxn_ls_file_t* file = buxn_ls_find_file(analyzer, sym->region.filename);
 						assert((file != NULL) && "Symbol comes from unopened file");

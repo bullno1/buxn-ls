@@ -5,7 +5,7 @@
 #include "workspace.h"
 #include "analyze.h"
 #include "completion.h"
-#include "bmacro.h"
+#include <bmacro.h>
 #include <string.h>
 #include <yyjson.h>
 #include <yuarel.h>
@@ -634,7 +634,20 @@ buxn_ls_handle_completion(
 	bio_cancel_timer(ctx->analyze_delay_timer);
 	buxn_ls_completion_ctx_t completion_ctx = {
 		.source = src_node,
+		.line_content = line_content,
 		.prefix = completion_prefix,
+		.lsp_range = {
+			.start = {
+				.line = line,
+				.character = bio_lsp_utf16_offset_from_byte_offset(
+					line_content.chars, line_content.len, completion_start
+				),
+			},
+			.end = { .line = line, .character = character },
+		},
+		.line_number = line,
+		.prefix_start_byte = (int)completion_start,
+		.prefix_end_byte = (int)byte_offset,
 	};
 	return buxn_ls_build_completion_list(&completion_ctx, response);
 }

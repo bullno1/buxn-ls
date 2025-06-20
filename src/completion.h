@@ -13,10 +13,12 @@ struct buxn_ls_src_node_s;
 
 typedef struct {
 	struct buxn_ls_src_node_s* source;
-	buxn_ls_str_t line;
-	bio_lsp_range_t lsp_prefix_range;
-	buxn_asm_file_range_t buxn_prefix_range;
+	buxn_ls_str_t line_content;
 	buxn_ls_str_t prefix;
+	bio_lsp_range_t lsp_range;
+	int line_number;
+	int prefix_start_byte;  // From start of line
+	int prefix_end_byte;  // Exclusive
 } buxn_ls_completion_ctx_t;
 
 struct yyjson_mut_val*
