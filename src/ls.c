@@ -624,7 +624,6 @@ buxn_ls_handle_completion(
 		.len = byte_offset - completion_start,
 	};
 	if (completion_prefix.len == 0) { return NULL; }
-	BIO_DEBUG("Completion prefix: %.*s", (int)completion_prefix.len, completion_prefix.chars);
 
 	bhash_index_t src_node_index = bhash_find(&ctx->analyzer.current_ctx->sources, path);
 	if (!bhash_is_valid(src_node_index)) { return NULL; }

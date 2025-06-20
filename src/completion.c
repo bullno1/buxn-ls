@@ -82,7 +82,28 @@ buxn_ls_visit_symbols(
 		def = def->next
 	) {
 		if (buxn_ls_match_symbol(def, &ctx->filter)) {
-			BIO_TRACE("%s", def->name);
+			buxn_ls_str_t suggestion = {
+				.chars = def->name,
+				.len = strlen(def->name),
+			};
+			switch (ctx->format_type) {
+				case BUXN_LS_FORMAT_FULL_NAME:
+					break;
+				case BUXN_LS_FORMAT_LOCAL_NAME:
+					for (size_t i = 0; i < suggestion.len; ++i) {
+						char ch = def->name[i];
+						if (ch == '/') {
+							suggestion.chars += i + 1;
+							suggestion.len -= (i + 1);
+						}
+					}
+					break;
+			}
+			BIO_DEBUG(
+				"Candidate: %s => %.*s",
+				def->name,
+				(int)suggestion.len, suggestion.chars
+			);
 		}
 	}
 
@@ -101,6 +122,8 @@ buxn_ls_build_completion_list(
 	struct yyjson_mut_doc* response
 ) {
 	if (ctx->prefix.len == 0) { return NULL; }
+
+	BIO_DEBUG("Completion prefix: %.*s", (int)ctx->prefix.len, ctx->prefix.chars);
 
 	buxn_ls_sym_filter_t filter = {
 		.prefix_pos = ctx->lsp_range.start,
@@ -125,7 +148,7 @@ buxn_ls_build_completion_list(
 		// the preceding and following labels
 		// filter = BUXN_LS_MATCH_NEARBY_LABEL;
 		match_type = BUXN_LS_MATCH_LOCAL_LABEL;
-		format_type = BUXN_LS_FORMAT_LOCAL_NAME;
+		format_type = BUXN_LS_FORMAT_FULL_NAME;
 		filter.prefix = buxn_ls_str_pop_front(ctx->prefix);
 		text_edit_start = ctx->prefix_start_byte + 1;
 	} else if (prefix_rune == '.' || prefix_rune == '-') {
@@ -138,7 +161,7 @@ buxn_ls_build_completion_list(
 		format_type = BUXN_LS_FORMAT_FULL_NAME;
 		filter.prefix = buxn_ls_str_pop_front(ctx->prefix);
 		text_edit_start = ctx->prefix_start_byte + 1;
-	} else if (prefix_rune == '/') {
+	} else if (prefix_rune == '/' || prefix_rune == '&') {
 		match_type = BUXN_LS_MATCH_SUB_LABEL;
 		format_type = BUXN_LS_FORMAT_LOCAL_NAME;
 		filter.prefix = buxn_ls_str_pop_front(ctx->prefix);
