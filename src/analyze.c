@@ -544,7 +544,19 @@ buxn_asm_fopen(buxn_asm_ctx_t* ctx, const char* filename) {
 	} else {  // New file
 		bhash_index_t doc_index = bhash_find(&ctx->workspace->docs, (char*){ (char*)filename });
 		if (bhash_is_valid(doc_index)) {  // File is managed
-			content = ctx->workspace->docs.values[doc_index];
+			// Make a copy so that even if workspace gets updated, we analyze
+			// based on the current content
+			buxn_ls_str_t content_str = ctx->workspace->docs.values[doc_index];
+			char* content_copy = barena_memalign(
+				&ctx->analyzer->current_ctx->arena,
+				content_str.len,
+				_Alignof(char)
+			);
+			memcpy(content_copy, content_str.chars, content_str.len);
+			content = (buxn_ls_str_t){
+				.chars = content_copy,
+				.len = content_str.len,
+			};
 		} else {  // File is unmanaged
 			bio_file_t fd;
 			bio_error_t error = { 0 };
