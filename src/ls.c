@@ -27,6 +27,7 @@ typedef struct {
 
 	bio_timer_t analyze_delay_timer;
 	buxn_ls_analyzer_t analyzer;
+	buxn_ls_completer_t completer;
 	buxn_ls_str_set_t diag_file_set_a;
 	buxn_ls_str_set_t diag_file_set_b;
 	buxn_ls_str_set_t* currently_diagnosed_files;
@@ -113,6 +114,7 @@ buxn_ls_initialize(
 
 	barena_init(&ctx->request_arena, pool);
 	buxn_ls_analyzer_init(&ctx->analyzer, pool);
+	buxn_ls_completer_init(&ctx->completer);
 
 	bhash_config_t hash_config = bhash_config_default();
 	hash_config.eq = buxn_ls_str_eq;
@@ -213,6 +215,7 @@ buxn_ls_cleanup(buxn_ls_ctx_t* ctx) {
 	bhash_cleanup(&ctx->diag_file_set_a);
 	bhash_cleanup(&ctx->diag_file_set_b);
 	buxn_ls_workspace_cleanup(&ctx->workspace);
+	buxn_ls_completer_cleanup(&ctx->completer);
 	buxn_ls_analyzer_cleanup(&ctx->analyzer);
 	barena_reset(&ctx->request_arena);
 }
@@ -630,7 +633,7 @@ buxn_ls_handle_completion(
 		.prefix_start_byte = (int)completion_start,
 		.prefix_end_byte = (int)byte_offset,
 	};
-	return buxn_ls_build_completion_list(&completion_ctx, response);
+	return buxn_ls_build_completion_list(&ctx->completer, &completion_ctx, response);
 }
 
 static yyjson_mut_val*
