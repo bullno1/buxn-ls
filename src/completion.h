@@ -12,6 +12,7 @@ struct buxn_ls_analyzer_s;
 struct buxn_ls_src_node_s;
 
 typedef struct {
+	struct barena_s* arena;
 	struct buxn_ls_src_node_s* source;
 	buxn_ls_str_t line_content;
 	buxn_ls_str_t prefix;

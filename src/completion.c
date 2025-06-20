@@ -1,6 +1,8 @@
 #include "completion.h"
 #include "analyze.h"
+#include "lsp.h"
 #include <bmacro.h>
+#include <yyjson.h>
 
 typedef enum {
 	BUXN_LS_MATCH_ANY_SYMBOL,
@@ -27,8 +29,12 @@ typedef struct {
 } buxn_ls_sym_filter_t;
 
 typedef struct {
+	barena_t* arena;
 	buxn_ls_sym_filter_t filter;
 	buxn_ls_sym_format_type_t format_type;
+	bio_lsp_range_t edit_range;
+	yyjson_mut_doc* doc;
+	yyjson_mut_val* items;
 } buxn_ls_sym_visit_ctx_t;
 
 static inline buxn_ls_str_t
@@ -104,6 +110,20 @@ buxn_ls_visit_symbols(
 				def->name,
 				(int)suggestion.len, suggestion.chars
 			);
+
+			yyjson_mut_val* item = yyjson_mut_arr_add_obj(ctx->doc, ctx->items);
+			yyjson_mut_obj_add_strn(ctx->doc, item, "label", suggestion.chars, suggestion.len);
+			yyjson_mut_obj_add_int(ctx->doc, item, "insertTextFormat", 1);  // PlainText
+			yyjson_mut_obj_add_int(ctx->doc, item, "insertTextMode", 1);  // asIs
+			yyjson_mut_val* text_edit = yyjson_mut_obj_add_obj(ctx->doc, item, "textEdit");
+			{
+				yyjson_mut_obj_add_strn(ctx->doc, text_edit, "newText", suggestion.chars, suggestion.len);
+				buxn_ls_serialize_lsp_range(
+					ctx->doc,
+					yyjson_mut_obj_add_obj(ctx->doc, text_edit, "range"),
+					&ctx->edit_range
+				);
+			}
 		}
 	}
 
@@ -238,18 +258,32 @@ buxn_ls_build_completion_list(
 			// TODO: use buxn_ls_str instead
 			int name_len = (int)strlen(most_recent_label->name);
 			int i;
+			char ch;
 			for (i = 0; i < name_len; ++i) {
-				char ch = most_recent_label->name[i];
+				ch = most_recent_label->name[i];
 				if (ch == '/') {
 					break;
 				}
 			}
-			// TODO: construct a prefix that is a combination of:
+
+			// When we have this scenario:
 			//
-			// * The most recent parent scope
-			// * The completion prefix
+			// ```
+			// @parent
+			// ,& <-- completion
+			// &child
+			// ```
+			//
+			// The most recent label is `parent` but it does not possess a trailing
+			// slash.
+			// So the safe thing to do is to just copy the scope then insert
+			// a slash of or own if needed.
+			char* parent_prefix = barena_memalign(ctx->arena, i + 1, _Alignof(char));
+			memcpy(parent_prefix, most_recent_label->name, i);
+			parent_prefix[i] = '/';
+
 			filter.prefix = (buxn_ls_str_t) {
-				.chars = most_recent_label->name,
+				.chars = parent_prefix,
 				// Local label includes the bare parent label (e.g: parent)
 				// Sub label only includes the child label (e.g: parent/child)
 				// Including the slash filters out the parent
@@ -267,14 +301,36 @@ buxn_ls_build_completion_list(
 			break;
 	}
 
+	int lsp_text_edit_start = (int)bio_lsp_utf16_offset_from_byte_offset(
+		ctx->line_content.chars, ctx->line_content.len, text_edit_start
+	);
+	bio_lsp_range_t edit_range = {
+		.start = {
+			.line = ctx->line_number,
+			.character = lsp_text_edit_start,
+		},
+		.end = ctx->lsp_range.end,
+	};
+
+	BIO_DEBUG("match_type = %d", match_type);
+	BIO_DEBUG("format_type = %d", format_type);
+	BIO_DEBUG("prefix = %.*s", (int)filter.prefix.len, filter.prefix.chars);
+
+	yyjson_mut_val* completion_list_obj = yyjson_mut_obj(response);
+	yyjson_mut_obj_add_bool(response, completion_list_obj, "isIncomplete", false);
+	yyjson_mut_val* completion_items_arr = yyjson_mut_obj_add_arr(response, completion_list_obj, "items");
+
 	buxn_ls_visit_symbols(
 		&(buxn_ls_sym_visit_ctx_t){
+			.arena = ctx->arena,
 			.filter = filter,
 			.format_type = format_type,
+			.doc = response,
+			.items = completion_items_arr,
+			.edit_range = edit_range,
 		},
 		ctx->source
 	);
-	(void)text_edit_start;
 
-	return NULL;
+	return completion_list_obj;
 }

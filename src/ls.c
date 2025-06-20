@@ -218,26 +218,6 @@ buxn_ls_cleanup(buxn_ls_ctx_t* ctx) {
 }
 
 static void
-buxn_ls_serialize_lsp_position(
-	yyjson_mut_doc* doc,
-	yyjson_mut_val* json,
-	const bio_lsp_position_t* position
-) {
-	yyjson_mut_obj_add_int(doc, json, "line", position->line);
-	yyjson_mut_obj_add_int(doc, json, "character", position->character);
-}
-
-static void
-buxn_ls_serialize_lsp_range(
-	yyjson_mut_doc* doc,
-	yyjson_mut_val* json,
-	const bio_lsp_range_t* range
-) {
-	buxn_ls_serialize_lsp_position(doc, yyjson_mut_obj_add_obj(doc, json, "start"), &range->start);
-	buxn_ls_serialize_lsp_position(doc, yyjson_mut_obj_add_obj(doc, json, "end"), &range->end);
-}
-
-static void
 buxn_ls_analyze_workspace(void* userdata) {
 	buxn_ls_ctx_t* ctx = userdata;
 	buxn_ls_analyzer_t* analyzer = &ctx->analyzer;
@@ -632,6 +612,7 @@ buxn_ls_handle_completion(
 	// Stop analysis since the doc is incomplete
 	bio_cancel_timer(ctx->analyze_delay_timer);
 	buxn_ls_completion_ctx_t completion_ctx = {
+		.arena = &ctx->request_arena,
 		.source = src_node,
 		.line_content = line_content,
 		.prefix = completion_prefix,
