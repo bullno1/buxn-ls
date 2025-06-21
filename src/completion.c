@@ -284,47 +284,49 @@ buxn_ls_build_completion_list(
 
 	char prefix_rune = ctx->prefix.chars[0];
 	if (
-		prefix_rune == ','
-		|| prefix_rune == '_'
-		|| prefix_rune == '!'
-		|| prefix_rune == '?'
+		prefix_rune == ',' || prefix_rune == '_'
+		|| prefix_rune == ';' || prefix_rune == '='
 	) {
 		match_type = BUXN_LS_MATCH_ANY_LABEL;
 		format_type = BUXN_LS_FORMAT_FULL_NAME;
 		filter.prefix = buxn_ls_str_pop_front(ctx->prefix);
+		filter.subroutine_only = false;
 		text_edit_start = ctx->prefix_start_byte + 1;
-		filter.subroutine_only = prefix_rune == '!' || prefix_rune == '?';
+		group_symbols = true;
+	} else if (prefix_rune == '!' || prefix_rune == '?') {
+		match_type = BUXN_LS_MATCH_ANY_LABEL;
+		format_type = BUXN_LS_FORMAT_FULL_NAME;
+		filter.prefix = buxn_ls_str_pop_front(ctx->prefix);
+		filter.subroutine_only = true;
+		text_edit_start = ctx->prefix_start_byte + 1;
 		group_symbols = true;
 	} else if (prefix_rune == '.' || prefix_rune == '-') {
 		match_type = BUXN_LS_MATCH_ZERO_LABEL;
 		format_type = BUXN_LS_FORMAT_FULL_NAME;
 		filter.prefix = buxn_ls_str_pop_front(ctx->prefix);
-		text_edit_start = ctx->prefix_start_byte + 1;
-		group_symbols = true;
-	} else if (prefix_rune == ';' || prefix_rune == '=') {
-		match_type = BUXN_LS_MATCH_ANY_LABEL;
-		format_type = BUXN_LS_FORMAT_FULL_NAME;
-		filter.prefix = buxn_ls_str_pop_front(ctx->prefix);
+		filter.subroutine_only = false;
 		text_edit_start = ctx->prefix_start_byte + 1;
 		group_symbols = true;
 	} else if (prefix_rune == '/' || prefix_rune == '&') {
 		match_type = BUXN_LS_MATCH_SUB_LABEL;
 		format_type = BUXN_LS_FORMAT_LOCAL_NAME;
 		filter.prefix = buxn_ls_str_pop_front(ctx->prefix);
+		filter.subroutine_only = false;
 		text_edit_start = ctx->prefix_start_byte + 1;
 		group_symbols = false;
 	} else if (prefix_rune == '|' || prefix_rune == '$') {
 		match_type = BUXN_LS_MATCH_PRECEDING_LABEL;
 		format_type = BUXN_LS_FORMAT_FULL_NAME;
 		filter.prefix = buxn_ls_str_pop_front(ctx->prefix);
+		filter.subroutine_only = false;
 		text_edit_start = ctx->prefix_start_byte + 1;
 		group_symbols = true;
 	} else {
 		match_type = BUXN_LS_MATCH_ANY_SYMBOL;
 		format_type = BUXN_LS_FORMAT_FULL_NAME;
 		filter.prefix = ctx->prefix;
-		text_edit_start = ctx->prefix_start_byte;
 		filter.subroutine_only = true;
+		text_edit_start = ctx->prefix_start_byte;
 		group_symbols = true;
 	}
 
