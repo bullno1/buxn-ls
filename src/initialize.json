@@ -14,7 +14,8 @@
 		"completionProvider": {
 			"triggerCharacters": [
 				",", "_", "/",
-				".", "-"
+				".", "-",
+				"&"
 			],
 			"allCommitCharacters": [
 				" "

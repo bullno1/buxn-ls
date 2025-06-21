@@ -349,6 +349,8 @@ buxn_ls_build_completion_list(
 		filter.subroutine_only = true;
 		text_edit_start = ctx->prefix_start_byte + 1;
 		group_symbols = false;
+	} else if (prefix_rune == '&') {  // This is a declaration
+		return NULL;
 	} else if (prefix_rune == '|' || prefix_rune == '$') {
 		match_type = BUXN_LS_MATCH_PRECEDING_LABEL;
 		format_type = BUXN_LS_FORMAT_FULL_NAME;
