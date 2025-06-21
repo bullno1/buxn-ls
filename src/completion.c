@@ -96,31 +96,80 @@ buxn_ls_match_symbol(
 		&& memcmp(def->name.chars, filter->prefix.chars, filter->prefix.len) == 0;
 }
 
-#if defined(__GNUC__) || defined(__clang__)
-__attribute__((format(printf, 4, 5)))
-#endif
-static void
-buxn_ls_add_detail_fmt(
-	barena_t* arena,
-	yyjson_mut_doc* doc,
-	yyjson_mut_val* item,
-	const char* fmt,
-	...
-) {
-	// TODO: use a reusable buffer and copy to arena instead of double formatting
-	va_list args, args_copy;
-
-	va_start(args, fmt);
-
+static buxn_ls_str_t
+buxn_ls_arena_vfmt(barena_t* arena, const char* fmt, va_list args) {
+	va_list args_copy;
 	va_copy(args_copy, args);
 	int strlen = vsnprintf(NULL, 0, fmt, args_copy);
 	va_end(args_copy);
 
 	char* str = barena_memalign(arena, strlen + 1, _Alignof(char));
 	vsnprintf(str, strlen + 1, fmt, args);
-	yyjson_mut_obj_add_strn(doc, item, "detail", str, strlen);
 
+	return (buxn_ls_str_t){
+		.chars = str,
+		.len = strlen,
+	};
+}
+
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((format(printf, 2, 3)))
+#endif
+static buxn_ls_str_t
+buxn_ls_arena_fmt(barena_t* arena, const char* fmt, ...) {
+	// TODO: use a reusable buffer and copy to arena instead of double formatting
+	va_list args;
+
+	va_start(args, fmt);
+	buxn_ls_str_t str = buxn_ls_arena_vfmt(arena, fmt, args);
 	va_end(args);
+
+	return str;
+}
+
+static void
+buxn_ls_serialize_symbol(
+	barena_t* arena,
+	buxn_ls_analyzer_t* analyzer,
+	const buxn_ls_sym_node_t* sym,
+	yyjson_mut_doc* doc,
+	yyjson_mut_val* item_obj
+) {
+	switch (sym->semantics) {
+		case BUXN_LS_SYMBOL_AS_VARIABLE: {
+			yyjson_mut_obj_add_int(doc, item_obj, "kind", 6);  // Variable
+			buxn_ls_str_t detail = buxn_ls_arena_fmt(arena, "|0x%04x", sym->address);
+			yyjson_mut_obj_add_strn(doc, item_obj, "detail", detail.chars, detail.len);
+		} break;
+		case BUXN_LS_SYMBOL_AS_SUBROUTINE: {
+			yyjson_mut_obj_add_int(doc, item_obj, "kind", 3);  // Function
+			buxn_ls_line_slice_t slice = buxn_ls_analyzer_split_file(analyzer, sym->source->filename);
+			if (sym->range.start.line < slice.num_lines) {
+				buxn_ls_str_t line_content = slice.lines[sym->range.start.line];
+				// TODO: cache these?
+				ptrdiff_t offset = bio_lsp_byte_offset_from_utf16_offset(
+					line_content.chars,
+					line_content.len,
+					sym->range.end.character
+				);
+				buxn_ls_str_t signature = {
+					.chars = line_content.chars + offset,
+					.len = line_content.len - offset,
+				};
+				yyjson_mut_obj_add_strn(doc, item_obj, "detail", signature.chars, signature.len);
+			}
+		} break;
+		case BUXN_LS_SYMBOL_AS_DEVICE_PORT: {
+			yyjson_mut_obj_add_int(doc, item_obj, "kind", 21);  // Constant
+			buxn_ls_str_t detail = buxn_ls_arena_fmt(arena, "|0x%02x", sym->address);
+			yyjson_mut_obj_add_strn(doc, item_obj, "detail", detail.chars, detail.len);
+		} break;
+		case BUXN_LS_SYMBOL_AS_ENUM: {
+			yyjson_mut_obj_add_int(doc, item_obj, "kind", 20);  // Variable
+			buxn_ls_str_t detail = buxn_ls_arena_fmt(arena, "|0x%04x", sym->address);
+			yyjson_mut_obj_add_strn(doc, item_obj, "detail", detail.chars, detail.len);
+		} break;
+	}
 }
 
 static bool
@@ -470,42 +519,18 @@ buxn_ls_build_completion_list(
 
 		if (item->size == 1) {
 			// Format a lone symbol as itself
-			switch (sym->semantics) {
-				case BUXN_LS_SYMBOL_AS_VARIABLE:
-					yyjson_mut_obj_add_int(response, item_obj, "kind", 6);  // Variable
-					buxn_ls_add_detail_fmt(ctx->arena, response, item_obj, "|0x%04x", sym->address);
-					break;
-				case BUXN_LS_SYMBOL_AS_SUBROUTINE: {
-					yyjson_mut_obj_add_int(response, item_obj, "kind", 3);  // Function
-					buxn_ls_line_slice_t slice = buxn_ls_analyzer_split_file(ctx->analyzer, sym->source->filename);
-					if (sym->range.start.line < slice.num_lines) {
-						buxn_ls_str_t line_content = slice.lines[sym->range.start.line];
-						// TODO: cache these?
-						ptrdiff_t offset = bio_lsp_byte_offset_from_utf16_offset(
-							line_content.chars,
-							line_content.len,
-							sym->range.end.character
-						);
-						buxn_ls_str_t signature = {
-							.chars = line_content.chars + offset,
-							.len = line_content.len - offset,
-						};
-						yyjson_mut_obj_add_strn(response, item_obj, "detail", signature.chars, signature.len);
-					}
-				} break;
-				case BUXN_LS_SYMBOL_AS_DEVICE_PORT:
-					yyjson_mut_obj_add_int(response, item_obj, "kind", 21);  // Constant
-					buxn_ls_add_detail_fmt(ctx->arena, response, item_obj, "|0x%02x", sym->address);
-					break;
-				case BUXN_LS_SYMBOL_AS_ENUM:
-					yyjson_mut_obj_add_int(response, item_obj, "kind", 20);  // Enum member
-					buxn_ls_add_detail_fmt(ctx->arena, response, item_obj, "|0x%04x", sym->address);
-					break;
-			}
+			buxn_ls_serialize_symbol(
+				ctx->arena,
+				ctx->analyzer,
+				sym,
+				response,
+				item_obj
+			);
 		} else {
 			// Format a group as a "module"
 			yyjson_mut_obj_add_int(response, item_obj, "kind", 9);  // Module
-			buxn_ls_add_detail_fmt(ctx->arena, response, item_obj, "( %d symbols )", item->size);
+			buxn_ls_str_t detail = buxn_ls_arena_fmt(ctx->arena, "( %d symbols )", item->size);
+			yyjson_mut_obj_add_strn(response, item_obj, "detail", detail.chars, detail.len);
 		}
 		yyjson_mut_val* text_edit = yyjson_mut_obj_add_obj(response, item_obj, "textEdit");
 		{
