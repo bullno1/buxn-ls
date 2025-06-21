@@ -346,7 +346,7 @@ buxn_ls_build_completion_list(
 		match_type = BUXN_LS_MATCH_SUB_LABEL;
 		format_type = BUXN_LS_FORMAT_LOCAL_NAME;
 		filter.prefix = buxn_ls_str_pop_front(ctx->prefix);
-		filter.subroutine_only = false;
+		filter.subroutine_only = true;
 		text_edit_start = ctx->prefix_start_byte + 1;
 		group_symbols = false;
 	} else if (prefix_rune == '|' || prefix_rune == '$') {
