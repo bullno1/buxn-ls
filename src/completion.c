@@ -5,18 +5,18 @@
 #include <yyjson.h>
 #include <stdarg.h>
 
-typedef enum {
-	BUXN_LS_MATCH_ANY_SYMBOL,
-	BUXN_LS_MATCH_ANY_LABEL,
-	BUXN_LS_MATCH_ZERO_LABEL,
-	BUXN_LS_MATCH_SUB_LABEL,
-	BUXN_LS_MATCH_PRECEDING_LABEL,
-} buxn_ls_sym_match_type_t;
+#define BUXN_LS_MATCH(X) \
+	X(BUXN_LS_MATCH_ANY_SYMBOL) \
+	X(BUXN_LS_MATCH_ANY_LABEL) \
+	X(BUXN_LS_MATCH_ZERO_LABEL) \
+	X(BUXN_LS_MATCH_SUB_LABEL) \
+	X(BUXN_LS_MATCH_PRECEDING_LABEL)
+BENUM(buxn_ls_sym_match_type, BUXN_LS_MATCH)
 
-typedef enum {
-	BUXN_LS_FORMAT_FULL_NAME,
-	BUXN_LS_FORMAT_LOCAL_NAME,
-} buxn_ls_sym_format_type_t;
+#define BUXN_LS_FORMAT(X) \
+	X(BUXN_LS_FORMAT_FULL_NAME) \
+	X(BUXN_LS_FORMAT_LOCAL_NAME)
+BENUM(buxn_ls_sym_format_type, BUXN_LS_FORMAT)
 
 typedef struct {
 	bool labels_only;
@@ -434,8 +434,8 @@ buxn_ls_build_completion_list(
 			break;
 	}
 
-	BIO_DEBUG("match_type = %d", match_type);
-	BIO_DEBUG("format_type = %d", format_type);
+	BIO_DEBUG("match_type = %s", buxn_ls_sym_match_type_to_str(match_type));
+	BIO_DEBUG("format_type = %s", buxn_ls_sym_format_type_to_str(format_type));
 	BIO_DEBUG("prefix = %.*s", (int)filter.prefix.len, filter.prefix.chars);
 	BIO_DEBUG("current_scope = %.*s", (int)current_scope.len, current_scope.chars);
 	BIO_DEBUG("group_symbols = %s", group_symbols ? "true" : "false");
