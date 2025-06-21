@@ -26,12 +26,7 @@ typedef struct {
 	int prefix_end_byte;  // Exclusive
 } buxn_ls_completion_ctx_t;
 
-typedef struct {
-	const struct buxn_ls_sym_node_s* sym;
-	int size;  //  For collapsed item
-	bool is_local;
-} buxn_ls_completion_item_t;
-
+typedef struct buxn_ls_completion_item_s buxn_ls_completion_item_t;
 typedef BHASH_TABLE(buxn_ls_str_t, buxn_ls_completion_item_t) buxn_ls_completion_map_t;
 
 typedef struct {

@@ -35,6 +35,12 @@ typedef struct {
 	bool group_symbols;
 } buxn_ls_sym_visit_ctx_t;
 
+struct buxn_ls_completion_item_s {
+	const struct buxn_ls_sym_node_s* sym;
+	int size;  //  For collapsed item
+	bool is_local;
+};
+
 static inline buxn_ls_str_t
 buxn_ls_str_pop_front(buxn_ls_str_t str) {
 	return (buxn_ls_str_t){
@@ -98,6 +104,7 @@ buxn_ls_match_symbol(
 
 static buxn_ls_str_t
 buxn_ls_arena_vfmt(barena_t* arena, const char* fmt, va_list args) {
+	// TODO: use a reusable buffer and copy to arena instead of double formatting
 	va_list args_copy;
 	va_copy(args_copy, args);
 	int strlen = vsnprintf(NULL, 0, fmt, args_copy);
@@ -117,7 +124,6 @@ __attribute__((format(printf, 2, 3)))
 #endif
 static buxn_ls_str_t
 buxn_ls_arena_fmt(barena_t* arena, const char* fmt, ...) {
-	// TODO: use a reusable buffer and copy to arena instead of double formatting
 	va_list args;
 
 	va_start(args, fmt);
@@ -128,22 +134,36 @@ buxn_ls_arena_fmt(barena_t* arena, const char* fmt, ...) {
 }
 
 static void
-buxn_ls_serialize_symbol(
-	barena_t* arena,
-	buxn_ls_analyzer_t* analyzer,
-	const buxn_ls_sym_node_t* sym,
+buxn_ls_serialize_completion_item_as_symbol(
+	const buxn_ls_completion_ctx_t* ctx,
 	yyjson_mut_doc* doc,
-	yyjson_mut_val* item_obj
+	yyjson_mut_val* item_obj,
+	const buxn_ls_completion_item_t* item,
+	buxn_ls_str_t label,
+	bio_lsp_range_t edit_range
 ) {
+	const buxn_ls_sym_node_t* sym = item->sym;
+	BIO_DEBUG(
+		"Candidate: '%.*s' => '%.*s'<%d>",
+		(int)sym->name.len, sym->name.chars,
+		(int)label.len, label.chars, (int)label.len
+	);
+
+	yyjson_mut_obj_add_strn(doc, item_obj, "label", label.chars, label.len);
+	yyjson_mut_obj_add_int(doc, item_obj, "insertTextFormat", 1);  // PlainText
+	yyjson_mut_obj_add_int(doc, item_obj, "insertTextMode", 1);  // asIs
+
 	switch (sym->semantics) {
 		case BUXN_LS_SYMBOL_AS_VARIABLE: {
 			yyjson_mut_obj_add_int(doc, item_obj, "kind", 6);  // Variable
-			buxn_ls_str_t detail = buxn_ls_arena_fmt(arena, "|0x%04x", sym->address);
+			buxn_ls_str_t detail = buxn_ls_arena_fmt(ctx->arena, "|0x%04x", sym->address);
 			yyjson_mut_obj_add_strn(doc, item_obj, "detail", detail.chars, detail.len);
 		} break;
 		case BUXN_LS_SYMBOL_AS_SUBROUTINE: {
 			yyjson_mut_obj_add_int(doc, item_obj, "kind", 3);  // Function
-			buxn_ls_line_slice_t slice = buxn_ls_analyzer_split_file(analyzer, sym->source->filename);
+			buxn_ls_line_slice_t slice = buxn_ls_analyzer_split_file(
+				ctx->analyzer, sym->source->filename
+			);
 			if (sym->range.start.line < slice.num_lines) {
 				buxn_ls_str_t line_content = slice.lines[sym->range.start.line];
 				// TODO: cache these?
@@ -161,14 +181,24 @@ buxn_ls_serialize_symbol(
 		} break;
 		case BUXN_LS_SYMBOL_AS_DEVICE_PORT: {
 			yyjson_mut_obj_add_int(doc, item_obj, "kind", 21);  // Constant
-			buxn_ls_str_t detail = buxn_ls_arena_fmt(arena, "|0x%02x", sym->address);
+			buxn_ls_str_t detail = buxn_ls_arena_fmt(ctx->arena, "|0x%02x", sym->address);
 			yyjson_mut_obj_add_strn(doc, item_obj, "detail", detail.chars, detail.len);
 		} break;
 		case BUXN_LS_SYMBOL_AS_ENUM: {
 			yyjson_mut_obj_add_int(doc, item_obj, "kind", 20);  // Variable
-			buxn_ls_str_t detail = buxn_ls_arena_fmt(arena, "|0x%04x", sym->address);
+			buxn_ls_str_t detail = buxn_ls_arena_fmt(ctx->arena, "|0x%04x", sym->address);
 			yyjson_mut_obj_add_strn(doc, item_obj, "detail", detail.chars, detail.len);
 		} break;
+	}
+
+	yyjson_mut_val* text_edit = yyjson_mut_obj_add_obj(doc, item_obj, "textEdit");
+	{
+		yyjson_mut_obj_add_strn(doc, text_edit, "newText", label.chars, label.len);
+		buxn_ls_serialize_lsp_range(
+			doc,
+			yyjson_mut_obj_add_obj(doc, text_edit, "range"),
+			&edit_range
+		);
 	}
 }
 
@@ -225,7 +255,12 @@ buxn_ls_visit_symbols(
 						.is_local = is_local,
 					};
 				} else {
-					ctx->completion_items->values[alloc_result.index].size += 1;
+					buxn_ls_completion_item_t* item = &ctx->completion_items->values[alloc_result.index];
+					item->size += 1;
+					if (buxn_ls_cstr_eq(&def->name, &scope, 0)) {
+						// Represent the group by the root label if possible
+						item->sym = def;
+					}
 				}
 			} else {
 				buxn_ls_str_t key = def->name;
@@ -307,7 +342,7 @@ buxn_ls_build_completion_list(
 		filter.subroutine_only = false;
 		text_edit_start = ctx->prefix_start_byte + 1;
 		group_symbols = true;
-	} else if (prefix_rune == '/' || prefix_rune == '&') {
+	} else if (prefix_rune == '/') {
 		match_type = BUXN_LS_MATCH_SUB_LABEL;
 		format_type = BUXN_LS_FORMAT_LOCAL_NAME;
 		filter.prefix = buxn_ls_str_pop_front(ctx->prefix);
@@ -346,7 +381,7 @@ buxn_ls_build_completion_list(
 			char ch = ctx->line_content.chars[i];
 			if (ch == '/') {
 				// The filter type is not changed because:
-				// * The prefix rune could have restricted the search list
+				// * The prefix could have restricted the search list
 				// * a/b is a legal macro name
 				// Only the formatting is affected
 				format_type = BUXN_LS_FORMAT_LOCAL_NAME;
@@ -467,6 +502,7 @@ buxn_ls_build_completion_list(
 	yyjson_mut_val* completion_list_obj = yyjson_mut_obj(response);
 	yyjson_mut_obj_add_bool(response, completion_list_obj, "isIncomplete", false);
 	yyjson_mut_val* completion_items_arr = yyjson_mut_obj_add_arr(response, completion_list_obj, "items");
+
 	bhash_index_t num_candidates = bhash_len(&completer->completion_items);
 	for (
 		bhash_index_t candidate_index = 0;
@@ -475,76 +511,91 @@ buxn_ls_build_completion_list(
 	) {
 		const buxn_ls_completion_item_t* item = &completer->completion_items.values[candidate_index];
 		const buxn_ls_sym_node_t* sym = item->sym;
-		buxn_ls_str_t label;
+		buxn_ls_str_t scope = buxn_ls_label_scope(sym->name);
+		bool is_root = buxn_ls_cstr_eq(&sym->name, &scope, 0);
 		switch (format_type) {
-			case BUXN_LS_FORMAT_FULL_NAME:
+			case BUXN_LS_FORMAT_FULL_NAME: {
 				if (item->is_local) {
-					buxn_ls_str_t scope = buxn_ls_label_scope(sym->name);
-					label = (buxn_ls_str_t){
-						.chars = sym->name.chars + scope.len,
-						.len = sym->name.len - scope.len,
-					};
-				} else {
-					if (item->size == 1) {
-						// Use full name if this is the only symbol of the scope
+					buxn_ls_str_t label;
+					if (is_root) {
 						label = sym->name;
 					} else {
-						// Use scope name if there are multiple
-						label = completer->completion_items.keys[candidate_index];
+						label = (buxn_ls_str_t){
+							.chars = sym->name.chars + scope.len,
+							.len = sym->name.len - scope.len,
+						};
+					};
+
+					buxn_ls_serialize_completion_item_as_symbol(
+						ctx,
+						response,
+						yyjson_mut_arr_add_obj(response, completion_items_arr),
+						item, label, edit_range
+					);
+				} else {
+					if (item->size == 1 || is_root) {
+						buxn_ls_serialize_completion_item_as_symbol(
+							ctx,
+							response,
+							yyjson_mut_arr_add_obj(response, completion_items_arr),
+							item, sym->name, edit_range
+						);
+					}
+
+					if (item->size > 1) {
+						// Format a group as a "module"
+						yyjson_mut_val* item_obj = yyjson_mut_arr_add_obj(response, completion_items_arr);
+						buxn_ls_str_t label = buxn_ls_arena_fmt(
+							ctx->arena,
+							"%.*s/", (int)scope.len, scope.chars
+						);
+						BIO_DEBUG(
+							"Candidate: '%.*s' => '%.*s'<%d>",
+							(int)sym->name.len, sym->name.chars,
+							(int)label.len, label.chars, (int)label.len
+						);
+
+						yyjson_mut_obj_add_strn(response, item_obj, "label", label.chars, label.len);
+						yyjson_mut_obj_add_int(response, item_obj, "insertTextFormat", 1);  // PlainText
+						yyjson_mut_obj_add_int(response, item_obj, "insertTextMode", 1);  // asIs
+						yyjson_mut_obj_add_int(response, item_obj, "kind", 9);  // Module
+						buxn_ls_str_t detail = buxn_ls_arena_fmt(
+							ctx->arena,
+							"( %d symbols )",
+							item->size - (is_root ? 1 : 0)  // Exclude the root if any
+						);
+						yyjson_mut_obj_add_strn(response, item_obj, "detail", detail.chars, detail.len);
+						yyjson_mut_val* text_edit = yyjson_mut_obj_add_obj(response, item_obj, "textEdit");
+						{
+							yyjson_mut_obj_add_strn(
+								response, text_edit, "newText", scope.chars, scope.len
+							);
+							buxn_ls_serialize_lsp_range(
+								response,
+								yyjson_mut_obj_add_obj(response, text_edit, "range"),
+								&edit_range
+							);
+						}
 					}
 				}
-				break;
+			} break;
 			case BUXN_LS_FORMAT_LOCAL_NAME: {
-				buxn_ls_str_t scope = buxn_ls_label_scope(sym->name);
-				if (scope.len < sym->name.len) {
-					label = (buxn_ls_str_t){
+				if (scope.len + 1 < sym->name.len) {
+					buxn_ls_str_t label = {
 						// Skip the '/'
 						.chars = sym->name.chars + (scope.len + 1),
 						.len = sym->name.len - (scope.len + 1),
 					};
-				} else {
-					label = (buxn_ls_str_t){ 0 };
+					buxn_ls_serialize_completion_item_as_symbol(
+						ctx,
+						response,
+						yyjson_mut_arr_add_obj(response, completion_items_arr),
+						item, label, edit_range
+					);
 				}
 			} break;
 		}
-		if (label.len == 0) { continue; }
-		BIO_DEBUG(
-			"Candidate: '%.*s' => '%.*s'<%d>",
-			(int)sym->name.len, sym->name.chars,
-			(int)label.len, label.chars, (int)label.len
-		);
-
-		yyjson_mut_val* item_obj = yyjson_mut_arr_add_obj(response, completion_items_arr);
-		yyjson_mut_obj_add_strn(response, item_obj, "label", label.chars, label.len);
-		yyjson_mut_obj_add_int(response, item_obj, "insertTextFormat", 1);  // PlainText
-		yyjson_mut_obj_add_int(response, item_obj, "insertTextMode", 1);  // asIs
-
-		if (item->size == 1) {
-			// Format a lone symbol as itself
-			buxn_ls_serialize_symbol(
-				ctx->arena,
-				ctx->analyzer,
-				sym,
-				response,
-				item_obj
-			);
-		} else {
-			// Format a group as a "module"
-			yyjson_mut_obj_add_int(response, item_obj, "kind", 9);  // Module
-			buxn_ls_str_t detail = buxn_ls_arena_fmt(ctx->arena, "( %d symbols )", item->size);
-			yyjson_mut_obj_add_strn(response, item_obj, "detail", detail.chars, detail.len);
-		}
-		yyjson_mut_val* text_edit = yyjson_mut_obj_add_obj(response, item_obj, "textEdit");
-		{
-			yyjson_mut_obj_add_strn(response, text_edit, "newText", label.chars, label.len);
-			buxn_ls_serialize_lsp_range(
-				response,
-				yyjson_mut_obj_add_obj(response, text_edit, "range"),
-				&edit_range
-			);
-		}
 	}
 
-	bio_yield();
 	return completion_list_obj;
 }
