@@ -5,6 +5,9 @@ target_include_directories(buxn INTERFACE "buxn/include")
 add_library(buxn-asm STATIC "buxn/src/asm/asm.c")
 target_link_libraries(buxn-asm PUBLIC buxn)
 
+add_library(buxn-asm-annotation STATIC "buxn/src/asm/annotation.c")
+target_link_libraries(buxn-asm-annotation PUBLIC buxn)
+
 # bio
 include(bio/deps/CMakeLists.txt)
 set(BUILD_DEPS OFF CACHE BOOL "bio should not build deps")

@@ -19,5 +19,6 @@ target_link_libraries(
 	yyjson
 	libyuarel
 	buxn-asm
+	buxn-asm-annotation
 	utf8proc
 )

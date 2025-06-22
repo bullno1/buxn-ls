@@ -4,18 +4,31 @@
 #include "lsp.h"
 #include <bmacro.h>
 #include <buxn/asm/asm.h>
+#include <buxn/asm/annotation.h>
 #include <bio/file.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <limits.h>
 #include <assert.h>
 
+typedef enum {
+	BUXN_LS_ANNO_DOC,
+	BUXN_LS_ANNO_BUXN_DEVICE,
+	BUXN_LS_ANNO_BUXN_MEMORY,
+	BUXN_LS_ANNO_BUXN_ENUM,
+} buxn_ls_anno_type_t;
+
+struct buxn_anno_ctx_s {
+	buxn_anno_spec_t spec;
+};
+
 struct buxn_asm_ctx_s {
 	buxn_ls_src_node_t* entry_node;
 	buxn_ls_analyzer_t* analyzer;
 	buxn_ls_workspace_t* workspace;
-	buxn_ls_sym_node_t* last_def_node;
 	buxn_asm_sym_t previous_sym;
+	buxn_ls_sym_node_t* current_sym_node;
+	buxn_anno_ctx_t anno_ctx;
 };
 
 static int
@@ -330,11 +343,36 @@ buxn_ls_analyze(buxn_ls_analyzer_t* analyzer, buxn_ls_workspace_t* workspace) {
 			bhash_clear(&analyzer->label_defs);
 			barray_clear(analyzer->references);
 
+			buxn_anno_t annotations[] = {
+				[BUXN_LS_ANNO_DOC] = {
+					.type = BUXN_ANNOTATION_PREFIX,
+					.name = "doc",
+				},
+				[BUXN_LS_ANNO_BUXN_DEVICE] = {
+					.type = BUXN_ANNOTATION_IMMEDIATE,
+					.name = "buxn:device",
+				},
+				[BUXN_LS_ANNO_BUXN_MEMORY] = {
+					.type = BUXN_ANNOTATION_IMMEDIATE,
+					.name = "buxn:memory",
+				},
+				[BUXN_LS_ANNO_BUXN_ENUM] = {
+					.type = BUXN_ANNOTATION_PREFIX,
+					.name = "buxn:enum",
+				},
+			};
 			buxn_asm_ctx_t ctx = {
 				.entry_node = node,
 				.analyzer = analyzer,
 				.workspace = workspace,
+				.anno_ctx = {
+					.spec = {
+						.annotations = annotations,
+						.num_annotations = BCOUNT_OF(annotations),
+					},
+				},
 			};
+			ctx.anno_ctx.spec.ctx = &ctx.anno_ctx;
 			buxn_asm(&ctx, node->filename);
 
 			// Connect references to definitions
@@ -470,35 +508,6 @@ buxn_asm_put_symbol(buxn_asm_ctx_t* ctx, uint16_t addr, const buxn_asm_sym_t* sy
 
 	buxn_ls_analyzer_t* analyzer = ctx->analyzer;
 	switch (sym->type) {
-		case BUXN_ASM_SYM_COMMENT: {
-			if (sym->id == 0) {  // Begin comment block
-				if (strcmp(sym->name, "(buxn:device") == 0) {
-					buxn_ls_file_t* file = buxn_ls_find_file(analyzer, sym->region.filename);
-					assert((file != NULL) && "Symbol comes from unopened file");
-					file->zero_page_semantics = BUXN_LS_SYMBOL_AS_DEVICE_PORT;
-				} else if (strcmp(sym->name, "(buxn:memory") == 0) {
-					buxn_ls_file_t* file = buxn_ls_find_file(analyzer, sym->region.filename);
-					assert((file != NULL) && "Symbol comes from unopened file");
-					file->zero_page_semantics = BUXN_LS_SYMBOL_AS_VARIABLE;
-				} else if (strcmp(sym->name, "(buxn:enum") == 0) {
-					buxn_ls_file_t* file = buxn_ls_find_file(analyzer, sym->region.filename);
-					assert((file != NULL) && "Symbol comes from unopened file");
-					file->zero_page_semantics = BUXN_LS_SYMBOL_AS_ENUM;
-				}
-			} else if (sym->id == 1) {  // Inner comment
-				if (  // Stack comment following a macro or label
-					ctx->last_def_node != NULL
-					&& (
-						strcmp(sym->name, "--") == 0
-						|| strcmp(sym->name, "->") == 0
-						|| strcmp(sym->name, ".") == 0
-					)
-				) {
-					ctx->last_def_node->semantics = BUXN_LS_SYMBOL_AS_SUBROUTINE;
-					ctx->last_def_node = NULL;
-				}
-			}
-		} break;
 		case BUXN_ASM_SYM_MACRO:
 		case BUXN_ASM_SYM_LABEL: {
 			if (!sym->name_is_generated) {
@@ -520,21 +529,19 @@ buxn_asm_put_symbol(buxn_asm_ctx_t* ctx, uint16_t addr, const buxn_asm_sym_t* sy
 					sym_node->semantics = BUXN_LS_SYMBOL_AS_SUBROUTINE;
 					barray_push(analyzer->macro_defs, sym_node, NULL);
 				}
-				ctx->last_def_node = sym_node;
-			} else {
-				ctx->last_def_node = NULL;
+				ctx->current_sym_node = sym_node;
 			}
 		} break;
 		case BUXN_ASM_SYM_MACRO_REF:
 		case BUXN_ASM_SYM_LABEL_REF:
 			barray_push(analyzer->references, *sym, NULL);
-			ctx->last_def_node = NULL;
 			break;
 		default:
-			ctx->last_def_node = NULL;
 			break;
 	}
 	ctx->previous_sym = *sym;
+
+	buxn_anno_handle_symbol(&ctx->anno_ctx.spec, sym);
 }
 
 buxn_asm_file_t*
@@ -638,4 +645,40 @@ buxn_asm_fgetc(buxn_asm_ctx_t* ctx, buxn_asm_file_t* file) {
 	} else {
 		return EOF;
 	}
+}
+
+void
+buxn_anno_handle_custom(
+	buxn_anno_ctx_t* anno_ctx,
+	const buxn_anno_t* annotation,
+	const buxn_asm_sym_t* sym,
+	const buxn_asm_source_region_t* region
+) {
+	buxn_asm_ctx_t* ctx = BCONTAINER_OF(anno_ctx, buxn_asm_ctx_t, anno_ctx);
+	buxn_ls_file_t* file = buxn_ls_find_file(ctx->analyzer, region->filename);
+	assert((file != NULL) && "Annotation comes from unopened file");
+
+	switch ((buxn_ls_anno_type_t)(annotation - anno_ctx->spec.annotations)) {
+		case BUXN_LS_ANNO_DOC:
+			break;
+		case BUXN_LS_ANNO_BUXN_DEVICE:
+			file->zero_page_semantics = BUXN_LS_SYMBOL_AS_DEVICE_PORT;
+			break;
+		case BUXN_LS_ANNO_BUXN_MEMORY:
+			file->zero_page_semantics = BUXN_LS_SYMBOL_AS_VARIABLE;
+			break;
+		case BUXN_LS_ANNO_BUXN_ENUM:
+			ctx->current_sym_node->semantics = BUXN_LS_SYMBOL_AS_ENUM;
+			break;
+	}
+}
+
+void
+buxn_anno_handle_type(
+	buxn_anno_ctx_t* anno_ctx,
+	const buxn_asm_sym_t* sym,
+	const buxn_asm_source_region_t* region
+) {
+	buxn_asm_ctx_t* ctx = BCONTAINER_OF(anno_ctx, buxn_asm_ctx_t, anno_ctx);
+	ctx->current_sym_node->semantics = BUXN_LS_SYMBOL_AS_SUBROUTINE;
 }
