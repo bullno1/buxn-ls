@@ -25,6 +25,12 @@ jobs:
         run: |
           cd msvc
           msbuild buxn-ls.sln /property:Configuration=RelWithDebInfo /property:Platform=x64
+      - name: Upload Windows artifact
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: bin/RelWithDebInfo/buxn-ls.exe
   build-linux:
     runs-on: ubuntu-latest
     steps:
@@ -42,6 +48,12 @@ jobs:
           mold-version: 2.37.1
       - name: Build
         run: BUILD_TYPE=RelWithDebInfo ./build
+      - name: Upload Linux artifact
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: bin/RelWithDebInfo/buxn-ls
   build-freebsd:
     runs-on: ubuntu-latest
     steps:
@@ -59,3 +71,28 @@ jobs:
           run: |
             export PATH=/usr/local/llvm20/bin:$PATH
             BUILD_TYPE=RelWithDebInfo ./build
+      - name: Upload FreeBSD artifact
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: freebsd
+          path: bin/RelWithDebInfo/buxn-ls
+  release:
+    name: Create Release
+    needs: [build-linux, build-windows, build-freebsd]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          prerelease: true
+          files: artifacts/**/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
