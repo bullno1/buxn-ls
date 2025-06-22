@@ -10,7 +10,12 @@ set(SOURCES
 	"workspace.c"
 	"libs.c"
 )
+
+if (WIN32)
+	set(SOURCES ${SOURCES} "resources.rc")
+endif ()
 add_executable(buxn-ls ${SOURCES})
+
 target_link_libraries(
 	buxn-ls
 	PRIVATE
