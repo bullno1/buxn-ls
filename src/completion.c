@@ -9,6 +9,7 @@
 	X(BUXN_LS_MATCH_ANY_SYMBOL) \
 	X(BUXN_LS_MATCH_ANY_LABEL) \
 	X(BUXN_LS_MATCH_ZERO_LABEL) \
+	X(BUXN_LS_MATCH_LOCAL_LABEL) \
 	X(BUXN_LS_MATCH_SUB_LABEL) \
 	X(BUXN_LS_MATCH_PRECEDING_LABEL)
 BENUM(buxn_ls_sym_match_type, BUXN_LS_MATCH)
@@ -336,10 +337,7 @@ buxn_ls_build_completion_list(
 	int text_edit_start;
 
 	char prefix_rune = ctx->prefix.chars[0];
-	if (
-		prefix_rune == ',' || prefix_rune == '_'
-		|| prefix_rune == ';' || prefix_rune == '='
-	) {
+	if (prefix_rune == ';' || prefix_rune == '=') {
 		match_type = BUXN_LS_MATCH_ANY_LABEL;
 		format_type = BUXN_LS_FORMAT_FULL_NAME;
 		filter.prefix = buxn_ls_str_pop_front(ctx->prefix);
@@ -360,6 +358,13 @@ buxn_ls_build_completion_list(
 		filter.subroutine_only = false;
 		text_edit_start = ctx->prefix_start_byte + 1;
 		group_symbols = true;
+	} else if (prefix_rune == ',' || prefix_rune == '_') {
+		match_type = BUXN_LS_MATCH_LOCAL_LABEL;
+		format_type = BUXN_LS_FORMAT_FULL_NAME;
+		filter.prefix = buxn_ls_str_pop_front(ctx->prefix);
+		filter.subroutine_only = false;
+		text_edit_start = ctx->prefix_start_byte + 1;
+		group_symbols = false;
 	} else if (prefix_rune == '/') {
 		match_type = BUXN_LS_MATCH_SUB_LABEL;
 		format_type = BUXN_LS_FORMAT_LOCAL_NAME;
@@ -453,6 +458,9 @@ buxn_ls_build_completion_list(
 		case BUXN_LS_MATCH_ANY_SYMBOL:
 			filter.labels_only = false;
 			break;
+		case BUXN_LS_MATCH_LOCAL_LABEL: {
+			filter.prefix = current_scope;
+		} break;
 		case BUXN_LS_MATCH_SUB_LABEL: {
 			// When we have this scenario:
 			//

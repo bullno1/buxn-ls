@@ -15,6 +15,7 @@
 			"triggerCharacters": [
 				"/",
 				".", "-",
+				",", "_",
 				"&"
 			],
 			"allCommitCharacters": [
