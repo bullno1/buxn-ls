@@ -25,12 +25,15 @@ jobs:
         run: |
           cd msvc
           msbuild buxn-ls.sln /property:Configuration=RelWithDebInfo /property:Platform=x64
+      - name: Create Windows archive
+        run: |
+          Compress-Archive -Path bin/RelWithDebInfo/buxn-ls.exe -DestinationPath buxn-ls-windows-amd64.zip
       - name: Upload Windows artifact
         if: startsWith(github.ref, 'refs/tags/v')
         uses: actions/upload-artifact@v4
         with:
           name: windows
-          path: bin/RelWithDebInfo/buxn-ls.exe
+          path: buxn-ls-windows-amd64.zip
   build-linux:
     runs-on: ubuntu-latest
     steps:
@@ -48,12 +51,16 @@ jobs:
           mold-version: 2.37.1
       - name: Build
         run: BUILD_TYPE=RelWithDebInfo ./build
+      - name: Create Linux archive
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tar -czf buxn-ls-linux-amd64.tar.gz -C bin/RelWithDebInfo buxn-ls
       - name: Upload Linux artifact
         if: startsWith(github.ref, 'refs/tags/v')
         uses: actions/upload-artifact@v4
         with:
           name: linux
-          path: bin/RelWithDebInfo/buxn-ls
+          path: buxn-ls-linux-amd64.tar.gz
   build-freebsd:
     runs-on: ubuntu-latest
     steps:
@@ -71,12 +78,16 @@ jobs:
           run: |
             export PATH=/usr/local/llvm20/bin:$PATH
             BUILD_TYPE=RelWithDebInfo ./build
+      - name: Create FreeBSD archive
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tar -czf buxn-ls-freebsd-amd64.tar.gz -C bin/RelWithDebInfo buxn-ls
       - name: Upload FreeBSD artifact
         if: startsWith(github.ref, 'refs/tags/v')
         uses: actions/upload-artifact@v4
         with:
           name: freebsd
-          path: bin/RelWithDebInfo/buxn-ls
+          path: buxn-ls-freebsd-amd64.tar.gz
   release:
     name: Create Release
     needs: [build-linux, build-windows, build-freebsd]
@@ -87,12 +98,14 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
-
+          merge-multiple: true
+      - name: Display structure of downloaded files
+        run: ls -R artifacts
       - name: Create GitHub prerelease
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          prerelease: true
+          draft: true
           files: artifacts/**/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
