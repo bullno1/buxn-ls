@@ -26,6 +26,7 @@ jobs:
           cd msvc
           msbuild buxn-ls.sln /property:Configuration=RelWithDebInfo /property:Platform=x64
       - name: Create Windows archive
+        if: startsWith(github.ref, 'refs/tags/v')
         run: |
           Compress-Archive -Path bin/RelWithDebInfo/buxn-ls.exe -DestinationPath buxn-ls-windows-amd64.zip
       - name: Upload Windows artifact
