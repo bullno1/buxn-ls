@@ -640,7 +640,7 @@ buxn_ls_handle_completion(
 		.lsp_range = {
 			.start = {
 				.line = line,
-				.character = bio_lsp_utf16_offset_from_byte_offset(
+				.character = (int)bio_lsp_utf16_offset_from_byte_offset(
 					line_content.chars, line_content.len, completion_start
 				),
 			},

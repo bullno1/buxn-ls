@@ -83,7 +83,7 @@ buxn_ls_convert_position(
 	}
 
 	buxn_ls_str_t line = line_slice.lines[lsp_pos.line];
-	lsp_pos.character = bio_lsp_utf16_offset_from_byte_offset(
+	lsp_pos.character = (int)bio_lsp_utf16_offset_from_byte_offset(
 		line.chars, line.len, basm_pos.col - 1
 	);
 

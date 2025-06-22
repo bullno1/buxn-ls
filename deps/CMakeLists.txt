@@ -29,3 +29,4 @@ target_include_directories(libyuarel PUBLIC "libyuarel")
 # utf8proc
 add_library(utf8proc STATIC "utf8proc/utf8proc.c")
 target_include_directories(utf8proc PUBLIC "utf8proc")
+target_compile_definitions(utf8proc PUBLIC "UTF8PROC_STATIC")
