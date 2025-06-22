@@ -188,6 +188,14 @@ buxn_ls_serialize_completion_item_as_symbol(
 		yyjson_mut_obj_add_strn(doc, item_obj, "detail", detail.chars, detail.len);
 	}
 
+	if (sym->documentation.len > 0) {
+		yyjson_mut_obj_add_strn(
+			doc, item_obj,
+			"documentation",
+			sym->documentation.chars, sym->documentation.len
+		);
+	}
+
 	yyjson_mut_val* text_edit = yyjson_mut_obj_add_obj(doc, item_obj, "textEdit");
 	{
 		yyjson_mut_obj_add_strn(doc, text_edit, "newText", label.chars, label.len);
@@ -503,7 +511,14 @@ buxn_ls_build_completion_list(
 						item, label, edit_range
 					);
 				} else {
-					if (item->size == 1 || is_root) {
+					if (
+						(item->size == 1)
+						|| (
+							is_root
+							&& item->sym->semantics != BUXN_LS_SYMBOL_AS_ENUM
+							&& item->sym->semantics != BUXN_LS_SYMBOL_AS_DEVICE_PORT
+						)
+					) {
 						buxn_ls_serialize_completion_item_as_symbol(
 							ctx,
 							response,
@@ -537,6 +552,13 @@ buxn_ls_build_completion_list(
 							item->size - (is_root ? 1 : 0)  // Exclude the root if any
 						);
 						yyjson_mut_obj_add_strn(response, item_obj, "detail", detail.chars, detail.len);
+						if (is_root && sym->documentation.len > 0) {
+							yyjson_mut_obj_add_strn(
+								response, item_obj,
+								"documentation",
+								sym->documentation.chars, sym->documentation.len
+							);
+						}
 						yyjson_mut_val* text_edit = yyjson_mut_obj_add_obj(response, item_obj, "textEdit");
 						{
 							yyjson_mut_obj_add_strn(
