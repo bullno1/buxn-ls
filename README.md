@@ -34,6 +34,7 @@ The comments do not change the binary output of the program.
 However, it provides the language server with more semantic informations.
 
 ## Building
+### Linux & FreeBSD
 
 Required software:
 
@@ -48,6 +49,10 @@ BUILD_TYPE=RelWithDebInfo ./build
 ```
 
 During development, `./watch` will watch the directory and build whenever a change is detected.
+
+### Windows
+
+Run `msvc.bat` to generate the Visual Studio solution.
 
 ## Configuration
 
