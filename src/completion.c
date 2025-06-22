@@ -463,29 +463,12 @@ buxn_ls_build_completion_list(
 			filter.prefix = current_scope;
 		} break;
 		case BUXN_LS_MATCH_SUB_LABEL: {
-			// When we have this scenario:
-			//
-			// ```
-			// @parent
-			// ,& <-- completion
-			// &child
-			// ```
-			//
-			// The most recent label is `parent` but it does not possess a trailing
-			// slash.
-			// So the safe thing to do is to just copy the scope then insert
-			// a slash of or own if needed.
-			char* parent_prefix = barena_memalign(ctx->arena, current_scope.len + 1, _Alignof(char));
-			memcpy(parent_prefix, current_scope.chars, current_scope.len);
-			parent_prefix[current_scope.len] = '/';
-
-			filter.prefix = (buxn_ls_str_t) {
-				.chars = parent_prefix,
-				// Local label includes the bare parent label (e.g: parent)
-				// Sub label only includes the child label (e.g: parent/child)
-				// Including the slash filters out the parent
-				.len = current_scope.len + 1,
-			};
+			filter.prefix = buxn_ls_arena_fmt(
+				ctx->arena,
+				"%.*s/%.*s",
+				(int)current_scope.len, current_scope.chars,
+				(int)filter.prefix.len, filter.prefix.chars
+			);
 		} break;
 		case BUXN_LS_MATCH_ANY_LABEL:
 			break;
@@ -573,7 +556,7 @@ buxn_ls_build_completion_list(
 					if (item->size > 1) {
 						// Format a group as a "module"
 						yyjson_mut_val* item_obj = yyjson_mut_arr_add_obj(response, completion_items_arr);
-;
+
 						buxn_ls_str_t label = buxn_ls_arena_fmt(
 							ctx->arena,
 							"%.*s/", (int)scope.len, scope.chars
