@@ -248,6 +248,17 @@ buxn_ls_find_file(buxn_ls_analyzer_t* analyzer, const char* filename) {
 	}
 }
 
+static buxn_ls_str_t
+buxn_ls_slice_file(buxn_ls_analyzer_t* analyzer, const buxn_asm_source_region_t* region) {
+	buxn_ls_file_t* file = buxn_ls_find_file(analyzer, region->filename);
+	assert((file != NULL) && "Invalid file");
+
+	return (buxn_ls_str_t){
+		.chars = file->content.chars + region->range.start.byte,
+		.len = region->range.end.byte - region->range.start.byte,
+	};
+}
+
 static void
 buxn_ls_init_analyzer_ctx(buxn_ls_analyzer_ctx_t* ctx, barena_pool_t* pool) {
 	barena_init(&ctx->arena, pool);
@@ -671,6 +682,7 @@ buxn_anno_handle_custom(
 
 	switch ((buxn_ls_anno_type_t)(annotation - anno_ctx->spec.annotations)) {
 		case BUXN_LS_ANNO_DOC:
+			ctx->current_sym_node->documentation = buxn_ls_slice_file(ctx->analyzer, region);
 			break;
 		case BUXN_LS_ANNO_BUXN_DEVICE:
 			file->zero_page_semantics = BUXN_LS_SYMBOL_AS_DEVICE_PORT;
@@ -693,4 +705,5 @@ buxn_anno_handle_type(
 ) {
 	buxn_asm_ctx_t* ctx = BCONTAINER_OF(anno_ctx, buxn_asm_ctx_t, anno_ctx);
 	ctx->current_sym_node->semantics = BUXN_LS_SYMBOL_AS_SUBROUTINE;
+	ctx->current_sym_node->signature = buxn_ls_slice_file(ctx->analyzer, region);
 }

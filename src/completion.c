@@ -173,25 +173,12 @@ buxn_ls_serialize_completion_item_as_symbol(
 	yyjson_mut_obj_add_int(doc, item_obj, "kind", kind);
 
 	if (sym->semantics == BUXN_LS_SYMBOL_AS_SUBROUTINE) {
-		buxn_ls_line_slice_t slice = buxn_ls_analyzer_split_file(
-			ctx->analyzer, sym->source->filename
-		);
-		if (sym->range.start.line < slice.num_lines) {
-			buxn_ls_str_t line_content = slice.lines[sym->range.start.line];
-			// TODO: cache these?
-			size_t offset = (size_t)bio_lsp_byte_offset_from_utf16_offset(
-				line_content.chars,
-				line_content.len,
-				sym->range.end.character
+		if (sym->signature.len > 0) {
+			buxn_ls_str_t detail = buxn_ls_arena_fmt(
+				ctx->arena, "( %.*s )",
+				(int)sym->signature.len, sym->signature.chars
 			);
-			if (offset + 1 < line_content.len) {
-				// TODO: better signature capture
-				buxn_ls_str_t signature = {
-					.chars = line_content.chars + (offset + 1),
-					.len = line_content.len - (offset + 1),
-				};
-				yyjson_mut_obj_add_strn(doc, item_obj, "detail", signature.chars, signature.len);
-			}
+			yyjson_mut_obj_add_strn(doc, item_obj, "detail", detail.chars, detail.len);
 		}
 	} else if (sym->address <= 0x00ff) {  // Zero page
 		buxn_ls_str_t detail = buxn_ls_arena_fmt(ctx->arena, "|0x%02x", sym->address);
