@@ -151,6 +151,7 @@ buxn_ls_serialize_completion_item_as_symbol(
 	);
 
 	yyjson_mut_obj_add_strn(doc, item_obj, "label", label.chars, label.len);
+	yyjson_mut_obj_add_strn(doc, item_obj, "filterText", label.chars, label.len);
 	yyjson_mut_obj_add_int(doc, item_obj, "insertTextFormat", 1);  // PlainText
 	yyjson_mut_obj_add_int(doc, item_obj, "insertTextMode", 1);  // asIs
 
@@ -584,6 +585,7 @@ buxn_ls_build_completion_list(
 						);
 
 						yyjson_mut_obj_add_strn(response, item_obj, "label", label.chars, label.len);
+						yyjson_mut_obj_add_strn(response, item_obj, "filterText", scope.chars, scope.len);
 						yyjson_mut_obj_add_int(response, item_obj, "insertTextFormat", 1);  // PlainText
 						yyjson_mut_obj_add_int(response, item_obj, "insertTextMode", 1);  // asIs
 						yyjson_mut_obj_add_int(response, item_obj, "kind", 9);  // Module
