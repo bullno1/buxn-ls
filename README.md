@@ -1,5 +1,7 @@
 # buxn-ls
 
+[![Build status](https://github.com/bullno1/buxn-ls/actions/workflows/build.yml/badge.svg)](https://github.com/bullno1/buxn-ls/actions/workflows/build.yml)
+
 A language server for [uxntal](https://wiki.xxiivv.com/site/uxntal.html).
 
 ## Features
@@ -13,7 +15,7 @@ A language server for [uxntal](https://wiki.xxiivv.com/site/uxntal.html).
 
 For more info, refer to:
 
-* [Request handlers](src/ls.c#L650)
+* [Request handlers](src/ls.c#L667)
 * [Capabilities](src/initialize.json)
 
 Currently, it is only tested against [YouCompleteMe](https://github.com/ycm-core/YouCompleteMe) and Vim.
