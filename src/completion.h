@@ -30,7 +30,7 @@ typedef struct buxn_ls_completion_item_s buxn_ls_completion_item_t;
 typedef BHASH_TABLE(buxn_ls_str_t, buxn_ls_completion_item_t) buxn_ls_completion_map_t;
 
 typedef struct {
-	buxn_ls_completion_map_t completion_items;
+	buxn_ls_completion_map_t completion_map;
 } buxn_ls_completer_t;
 
 void

@@ -31,7 +31,7 @@ typedef struct {
 typedef struct {
 	buxn_ls_sym_filter_t filter;
 	buxn_ls_str_t current_scope;
-	buxn_ls_completion_map_t* completion_items;
+	buxn_ls_completion_map_t* completion_map;
 	bool group_symbols;
 } buxn_ls_sym_visit_ctx_t;
 
@@ -153,42 +153,50 @@ buxn_ls_serialize_completion_item_as_symbol(
 	yyjson_mut_obj_add_int(doc, item_obj, "insertTextFormat", 1);  // PlainText
 	yyjson_mut_obj_add_int(doc, item_obj, "insertTextMode", 1);  // asIs
 
+	int kind = 6;  // Variable
 	switch (sym->semantics) {
-		case BUXN_LS_SYMBOL_AS_VARIABLE: {
-			yyjson_mut_obj_add_int(doc, item_obj, "kind", 6);  // Variable
-			buxn_ls_str_t detail = buxn_ls_arena_fmt(ctx->arena, "|0x%04x", sym->address);
-			yyjson_mut_obj_add_strn(doc, item_obj, "detail", detail.chars, detail.len);
-		} break;
-		case BUXN_LS_SYMBOL_AS_SUBROUTINE: {
-			yyjson_mut_obj_add_int(doc, item_obj, "kind", 3);  // Function
-			buxn_ls_line_slice_t slice = buxn_ls_analyzer_split_file(
-				ctx->analyzer, sym->source->filename
+		case BUXN_LS_SYMBOL_AS_VARIABLE:
+			kind = 6;  // Variable
+			break;
+		case BUXN_LS_SYMBOL_AS_SUBROUTINE:
+			kind = 3;  // Function
+			break;
+		case BUXN_LS_SYMBOL_AS_DEVICE_PORT:
+			kind = 21;  // Constant
+			break;
+		case BUXN_LS_SYMBOL_AS_ENUM:
+			kind = 20;  // Enum member
+			break;
+	}
+	yyjson_mut_obj_add_int(doc, item_obj, "kind", kind);
+
+	if (sym->semantics == BUXN_LS_SYMBOL_AS_SUBROUTINE) {
+		buxn_ls_line_slice_t slice = buxn_ls_analyzer_split_file(
+			ctx->analyzer, sym->source->filename
+		);
+		if (sym->range.start.line < slice.num_lines) {
+			buxn_ls_str_t line_content = slice.lines[sym->range.start.line];
+			// TODO: cache these?
+			size_t offset = (size_t)bio_lsp_byte_offset_from_utf16_offset(
+				line_content.chars,
+				line_content.len,
+				sym->range.end.character
 			);
-			if (sym->range.start.line < slice.num_lines) {
-				buxn_ls_str_t line_content = slice.lines[sym->range.start.line];
-				// TODO: cache these?
-				ptrdiff_t offset = bio_lsp_byte_offset_from_utf16_offset(
-					line_content.chars,
-					line_content.len,
-					sym->range.end.character
-				);
+			if (offset + 1 < line_content.len) {
+				// TODO: better signature capture
 				buxn_ls_str_t signature = {
-					.chars = line_content.chars + offset,
-					.len = line_content.len - offset,
+					.chars = line_content.chars + (offset + 1),
+					.len = line_content.len - (offset + 1),
 				};
 				yyjson_mut_obj_add_strn(doc, item_obj, "detail", signature.chars, signature.len);
 			}
-		} break;
-		case BUXN_LS_SYMBOL_AS_DEVICE_PORT: {
-			yyjson_mut_obj_add_int(doc, item_obj, "kind", 21);  // Constant
-			buxn_ls_str_t detail = buxn_ls_arena_fmt(ctx->arena, "|0x%02x", sym->address);
-			yyjson_mut_obj_add_strn(doc, item_obj, "detail", detail.chars, detail.len);
-		} break;
-		case BUXN_LS_SYMBOL_AS_ENUM: {
-			yyjson_mut_obj_add_int(doc, item_obj, "kind", 20);  // Variable
-			buxn_ls_str_t detail = buxn_ls_arena_fmt(ctx->arena, "|0x%04x", sym->address);
-			yyjson_mut_obj_add_strn(doc, item_obj, "detail", detail.chars, detail.len);
-		} break;
+		}
+	} else if (sym->address <= 0x00ff) {  // Zero page
+		buxn_ls_str_t detail = buxn_ls_arena_fmt(ctx->arena, "|0x%02x", sym->address);
+		yyjson_mut_obj_add_strn(doc, item_obj, "detail", detail.chars, detail.len);
+	} else {
+		buxn_ls_str_t detail = buxn_ls_arena_fmt(ctx->arena, "|0x%04x", sym->address);
+		yyjson_mut_obj_add_strn(doc, item_obj, "detail", detail.chars, detail.len);
 	}
 
 	yyjson_mut_val* text_edit = yyjson_mut_obj_add_obj(doc, item_obj, "textEdit");
@@ -200,6 +208,16 @@ buxn_ls_serialize_completion_item_as_symbol(
 			&edit_range
 		);
 	}
+
+	// Sort key: <is_remote>:<address>:<name>
+	buxn_ls_str_t sort_key = buxn_ls_arena_fmt(
+		ctx->arena,
+		"%s:%04x:%.*s",
+		item->is_local ? "0" : "1",
+		sym->address,
+		(int)sym->name.len, sym->name.chars
+	);
+	yyjson_mut_obj_add_strn(doc, item_obj, "sortText", sort_key.chars, sort_key.len);
 }
 
 static bool
@@ -246,16 +264,16 @@ buxn_ls_visit_symbols(
 
 			if (ctx->group_symbols) {
 				buxn_ls_str_t key = is_local ? def->name : scope;
-				bhash_alloc_result_t alloc_result = bhash_alloc(ctx->completion_items, key);
+				bhash_alloc_result_t alloc_result = bhash_alloc(ctx->completion_map, key);
 				if (alloc_result.is_new) {
-					ctx->completion_items->keys[alloc_result.index] = key;
-					ctx->completion_items->values[alloc_result.index] = (buxn_ls_completion_item_t){
+					ctx->completion_map->keys[alloc_result.index] = key;
+					ctx->completion_map->values[alloc_result.index] = (buxn_ls_completion_item_t){
 						.sym = def,
 						.size = 1,
 						.is_local = is_local,
 					};
 				} else {
-					buxn_ls_completion_item_t* item = &ctx->completion_items->values[alloc_result.index];
+					buxn_ls_completion_item_t* item = &ctx->completion_map->values[alloc_result.index];
 					item->size += 1;
 					if (buxn_ls_cstr_eq(&def->name, &scope, 0)) {
 						// Represent the group by the root label if possible
@@ -269,7 +287,7 @@ buxn_ls_visit_symbols(
 					.size = 1,
 					.is_local = is_local,
 				};
-				bhash_put(ctx->completion_items, key, value);
+				bhash_put(ctx->completion_map, key, value);
 			}
 		}
 	}
@@ -288,12 +306,12 @@ buxn_ls_completer_init(buxn_ls_completer_t* completer) {
 	bhash_config_t config = bhash_config_default();
 	config.eq = buxn_ls_cstr_eq;
 	config.hash = buxn_ls_cstr_hash;
-	bhash_init(&completer->completion_items, config);
+	bhash_init(&completer->completion_map, config);
 }
 
 void
 buxn_ls_completer_cleanup(buxn_ls_completer_t* completer) {
-	bhash_cleanup(&completer->completion_items);
+	bhash_cleanup(&completer->completion_map);
 }
 
 struct yyjson_mut_val*
@@ -465,7 +483,6 @@ buxn_ls_build_completion_list(
 		case BUXN_LS_MATCH_ZERO_LABEL:
 			filter.addr_max = 0x00ff;
 			break;
-		// BUXN_LS_MATCH_NEARBY_LABEL,   // TODO: approximate label address around completion context
 		case BUXN_LS_MATCH_PRECEDING_LABEL:
 			filter.preceding_labels = true;
 			break;
@@ -478,12 +495,12 @@ buxn_ls_build_completion_list(
 	BIO_DEBUG("group_symbols = %s", group_symbols ? "true" : "false");
 
 	// Collect candidates
-	bhash_clear(&completer->completion_items);
+	bhash_clear(&completer->completion_map);
 	buxn_ls_visit_symbols(
 		&(buxn_ls_sym_visit_ctx_t){
 			.filter = filter,
 			.current_scope = current_scope,
-			.completion_items = &completer->completion_items,
+			.completion_map = &completer->completion_map,
 			.group_symbols = group_symbols,
 		},
 		ctx->source
@@ -505,13 +522,13 @@ buxn_ls_build_completion_list(
 	yyjson_mut_obj_add_bool(response, completion_list_obj, "isIncomplete", false);
 	yyjson_mut_val* completion_items_arr = yyjson_mut_obj_add_arr(response, completion_list_obj, "items");
 
-	bhash_index_t num_candidates = bhash_len(&completer->completion_items);
+	bhash_index_t num_candidates = bhash_len(&completer->completion_map);
 	for (
 		bhash_index_t candidate_index = 0;
 		candidate_index < num_candidates;
 		++candidate_index
 	) {
-		const buxn_ls_completion_item_t* item = &completer->completion_items.values[candidate_index];
+		const buxn_ls_completion_item_t* item = &completer->completion_map.values[candidate_index];
 		const buxn_ls_sym_node_t* sym = item->sym;
 		buxn_ls_str_t scope = buxn_ls_label_scope(sym->name);
 		bool is_root = buxn_ls_cstr_eq(&sym->name, &scope, 0);
@@ -547,6 +564,7 @@ buxn_ls_build_completion_list(
 					if (item->size > 1) {
 						// Format a group as a "module"
 						yyjson_mut_val* item_obj = yyjson_mut_arr_add_obj(response, completion_items_arr);
+;
 						buxn_ls_str_t label = buxn_ls_arena_fmt(
 							ctx->arena,
 							"%.*s/", (int)scope.len, scope.chars
@@ -578,6 +596,18 @@ buxn_ls_build_completion_list(
 								&edit_range
 							);
 						}
+						buxn_ls_str_t sort_key = buxn_ls_arena_fmt(
+							ctx->arena,
+							"%s:%04x:%.*s",
+							item->is_local ? "0" : "1",
+							sym->address,
+							(int)label.len, label.chars
+						);
+						yyjson_mut_obj_add_strn(
+							response, item_obj,
+							"sortText",
+							sort_key.chars, sort_key.len
+						);
 					}
 				}
 			} break;
