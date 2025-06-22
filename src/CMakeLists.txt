@@ -22,3 +22,4 @@ target_link_libraries(
 	buxn-asm-annotation
 	utf8proc
 )
+target_link_options(buxn-ls PRIVATE $<$<CONFIG:RelWithDebInfo>:-static>)

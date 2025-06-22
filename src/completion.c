@@ -103,37 +103,6 @@ buxn_ls_match_symbol(
 		&& memcmp(def->name.chars, filter->prefix.chars, filter->prefix.len) == 0;
 }
 
-static buxn_ls_str_t
-buxn_ls_arena_vfmt(barena_t* arena, const char* fmt, va_list args) {
-	// TODO: use a reusable buffer and copy to arena instead of double formatting
-	va_list args_copy;
-	va_copy(args_copy, args);
-	int strlen = vsnprintf(NULL, 0, fmt, args_copy);
-	va_end(args_copy);
-
-	char* str = barena_memalign(arena, strlen + 1, _Alignof(char));
-	vsnprintf(str, strlen + 1, fmt, args);
-
-	return (buxn_ls_str_t){
-		.chars = str,
-		.len = strlen,
-	};
-}
-
-#if defined(__GNUC__) || defined(__clang__)
-__attribute__((format(printf, 2, 3)))
-#endif
-static buxn_ls_str_t
-buxn_ls_arena_fmt(barena_t* arena, const char* fmt, ...) {
-	va_list args;
-
-	va_start(args, fmt);
-	buxn_ls_str_t str = buxn_ls_arena_vfmt(arena, fmt, args);
-	va_end(args);
-
-	return str;
-}
-
 static void
 buxn_ls_serialize_completion_item_as_symbol(
 	const buxn_ls_completion_ctx_t* ctx,

@@ -437,16 +437,33 @@ buxn_ls_handle_hover(
 	const char* path = buxn_ls_workspace_resolve_path(&ctx->workspace, uri);
 	if (path == NULL) { return NULL; }
 
-	buxn_ls_line_slice_t slice = buxn_ls_analyzer_split_file(&ctx->analyzer, path);
-	if (def->range.start.line >= slice.num_lines) { return NULL; }
-
-	buxn_ls_str_t line = slice.lines[def->range.start.line];
 	yyjson_mut_val* result = yyjson_mut_obj(response);
 	{
 		yyjson_mut_val* content_obj = yyjson_mut_obj_add_obj(response, result, "contents");
 		{
 			yyjson_mut_obj_add_str(response, content_obj, "kind", "plaintext");
-			yyjson_mut_obj_add_strn(response, content_obj, "value", line.chars, line.len);
+
+			buxn_ls_str_t signature_line = { 0 };
+			if (def->signature.len > 0) {
+				signature_line = buxn_ls_arena_fmt(
+					&ctx->request_arena,
+					"( %.*s )",
+					(int)def->signature.len, def->signature.chars
+				);
+			}
+
+			buxn_ls_str_t detail = buxn_ls_arena_fmt(
+				&ctx->request_arena,
+				"%.*s %.*s\n"
+				"Defined in: %s\n"
+				"\n"
+				"%.*s",
+				(int)def->name.len, def->name.chars,
+				(int)signature_line.len, signature_line.chars,
+				def->source->filename,
+				(int)def->documentation.len, def->documentation.chars
+			);
+			yyjson_mut_obj_add_strn(response, content_obj, "value", detail.chars, detail.len);
 		}
 		yyjson_mut_val* range_obj = yyjson_mut_obj_add_obj(response, result, "range");
 		buxn_ls_serialize_lsp_range(response, range_obj, &def->range);
