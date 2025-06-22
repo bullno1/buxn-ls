@@ -222,34 +222,6 @@ buxn_ls_serialize_completion_item_as_symbol(
 	yyjson_mut_obj_add_strn(doc, item_obj, "sortText", sort_key.chars, sort_key.len);
 }
 
-static bool
-buxn_ls_cstr_eq(const void* lhs, const void* rhs, size_t size) {
-	(void)size;
-	const buxn_ls_str_t* lstr = lhs;
-	const buxn_ls_str_t* rstr = rhs;
-	return lstr->len == rstr->len
-		&& memcmp(lstr->chars, rstr->chars, lstr->len) == 0;
-}
-
-static bhash_hash_t
-buxn_ls_cstr_hash(const void* key, size_t size) {
-	(void)size;
-	const buxn_ls_str_t* str = key;
-	return bhash_hash(str->chars, str->len);
-}
-
-static buxn_ls_str_t
-buxn_ls_label_scope(buxn_ls_str_t name) {
-	int i;
-	for (i = 0; i < (int)name.len; ++i) {
-		if (name.chars[i] == '/') { break; }
-	}
-	return (buxn_ls_str_t){
-		.chars = name.chars,
-		.len = i,
-	};
-}
-
 static void
 buxn_ls_visit_symbols(
 	const buxn_ls_sym_visit_ctx_t* ctx,

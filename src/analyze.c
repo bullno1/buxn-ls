@@ -27,6 +27,7 @@ struct buxn_asm_ctx_s {
 	buxn_ls_analyzer_t* analyzer;
 	buxn_ls_workspace_t* workspace;
 	buxn_asm_sym_t previous_sym;
+	buxn_ls_str_t enum_scope;
 	buxn_ls_sym_node_t* current_sym_node;
 	buxn_anno_ctx_t anno_ctx;
 };
@@ -518,9 +519,19 @@ buxn_asm_put_symbol(buxn_asm_ctx_t* ctx, uint16_t addr, const buxn_asm_sym_t* sy
 					sym_node->address = addr;
 
 					if (addr <= 0x00ff) {  // Zero-page
-						buxn_ls_file_t* file = buxn_ls_find_file(analyzer, sym->region.filename);
-						assert((file != NULL) && "Symbol comes from unopened file");
-						sym_node->semantics = file->zero_page_semantics;
+						buxn_ls_str_t scope = buxn_ls_label_scope(sym_node->name);
+						if (
+							ctx->enum_scope.len > 0
+							&& buxn_ls_cstr_eq(&scope, &ctx->enum_scope, 0)
+						) {
+							sym_node->semantics = BUXN_LS_SYMBOL_AS_ENUM;
+						} else {
+							buxn_ls_file_t* file = buxn_ls_find_file(analyzer, sym->region.filename);
+							assert((file != NULL) && "Symbol comes from unopened file");
+
+							sym_node->semantics = file->zero_page_semantics;
+							ctx->enum_scope.len = 0;
+						}
 					}
 
 					uint16_t id = sym->id;
@@ -669,6 +680,7 @@ buxn_anno_handle_custom(
 			break;
 		case BUXN_LS_ANNO_BUXN_ENUM:
 			ctx->current_sym_node->semantics = BUXN_LS_SYMBOL_AS_ENUM;
+			ctx->enum_scope = buxn_ls_label_scope(ctx->current_sym_node->name);
 			break;
 	}
 }

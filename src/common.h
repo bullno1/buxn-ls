@@ -65,6 +65,34 @@ buxn_ls_str_eq(const void* lhs, const void* rhs, size_t size) {
 	return strcmp(*(const char**)lhs, *(const char**)rhs) == 0;
 }
 
+static inline buxn_ls_str_t
+buxn_ls_label_scope(buxn_ls_str_t name) {
+	int i;
+	for (i = 0; i < (int)name.len; ++i) {
+		if (name.chars[i] == '/') { break; }
+	}
+	return (buxn_ls_str_t){
+		.chars = name.chars,
+		.len = i,
+	};
+}
+
+static inline bool
+buxn_ls_cstr_eq(const void* lhs, const void* rhs, size_t size) {
+	(void)size;
+	const buxn_ls_str_t* lstr = lhs;
+	const buxn_ls_str_t* rstr = rhs;
+	return lstr->len == rstr->len
+		&& memcmp(lstr->chars, rstr->chars, lstr->len) == 0;
+}
+
+static inline bhash_hash_t
+buxn_ls_cstr_hash(const void* key, size_t size) {
+	(void)size;
+	const buxn_ls_str_t* str = key;
+	return bhash_hash(str->chars, str->len);
+}
+
 static inline void
 buxn_ls_serialize_lsp_position(
 	yyjson_mut_doc* doc,
