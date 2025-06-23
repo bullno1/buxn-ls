@@ -231,6 +231,7 @@ buxn_ls_make_sym_node(
 			.len = strlen(sym->name),
 		},
 		.source = src_node,
+		.byte_offset = sym->region.range.start.byte,
 		.range = buxn_ls_convert_range(
 			analyzer, sym->region.filename, sym->region.range
 		),
@@ -387,6 +388,65 @@ buxn_ls_analyze(buxn_ls_analyzer_t* analyzer, buxn_ls_workspace_t* workspace) {
 			ctx.anno_ctx.spec.ctx = &ctx.anno_ctx;
 			buxn_asm(&ctx, node->filename);
 
+			// Bring forward old symbols in files with error to have some degree
+			// of error tolerance
+			bhash_index_t num_files = bhash_len(&analyzer->files);
+			for (bhash_index_t file_index = 0; file_index < num_files; ++file_index) {
+				buxn_ls_file_t* file = &analyzer->files.values[file_index];
+				if (!file->has_error) { continue; }
+
+				bhash_index_t previous_src_index = bhash_find(
+					&analyzer->previous_ctx->sources, analyzer->files.keys[file_index]
+				);
+				if (!bhash_is_valid(previous_src_index)) { continue; }
+				buxn_ls_src_node_t* previous_src_node = analyzer->previous_ctx->sources.values[previous_src_index];
+
+				bhash_index_t current_src_index = bhash_find(
+					&analyzer->current_ctx->sources, analyzer->files.keys[file_index]
+				);
+				if (!bhash_is_valid(current_src_index)) { continue; }
+				buxn_ls_src_node_t* current_src_node = analyzer->current_ctx->sources.values[current_src_index];
+
+				for (
+					buxn_ls_sym_node_t* sym_node = previous_src_node->definitions;
+					sym_node != NULL;
+					sym_node = sym_node->next
+				) {
+					if (sym_node->byte_offset <= file->last_symbol_byte) {
+						continue;
+					}
+
+					// Symbol appears after error
+					buxn_ls_sym_node_t* sym_copy = barena_memalign(
+						&analyzer->current_ctx->arena,
+						sizeof(buxn_ls_sym_node_t), _Alignof(buxn_ls_sym_node_t)
+					);
+					*sym_copy = (buxn_ls_sym_node_t){
+						.name = buxn_ls_arena_cstrcpy(
+							&analyzer->current_ctx->arena,
+							sym_node->name
+						),
+						.documentation = buxn_ls_arena_cstrcpy(
+							&analyzer->current_ctx->arena,
+							sym_node->documentation
+						),
+						.signature = buxn_ls_arena_cstrcpy(
+							&analyzer->current_ctx->arena,
+							sym_node->signature
+						),
+						.source = current_src_node,
+						.type = sym_node->type,
+						.semantics = sym_node->semantics,
+						.byte_offset = sym_node->byte_offset,
+						.range = sym_node->range,
+						.address = sym_node->address,
+					};
+
+					sym_copy->next = sym_copy->source->definitions;
+					sym_copy->source->definitions = sym_copy;
+				}
+			}
+
 			// Connect references to definitions
 			size_t num_refs = barray_len(analyzer->references);
 			for (size_t sym_index = 0; sym_index < num_refs; ++sym_index) {
@@ -463,9 +523,7 @@ buxn_asm_report(buxn_asm_ctx_t* ctx, buxn_asm_report_type_t type, const buxn_asm
 		bhash_index_t file_index = bhash_find(&analyzer->files, report->region->filename);
 		if (bhash_is_valid(file_index)) {
 			buxn_ls_file_t* file = &analyzer->files.values[file_index];
-			file->first_error_byte = report->region->range.start.byte < file->first_error_byte
-				? report->region->range.start.byte
-				: file->first_error_byte;
+			file->has_error = true;
 		}
 	}
 
@@ -522,6 +580,12 @@ buxn_asm_put_symbol(buxn_asm_ctx_t* ctx, uint16_t addr, const buxn_asm_sym_t* sy
 	switch (sym->type) {
 		case BUXN_ASM_SYM_MACRO:
 		case BUXN_ASM_SYM_LABEL: {
+			buxn_ls_file_t* file = buxn_ls_find_file(analyzer, sym->region.filename);
+			assert((file != NULL) && "Symbol comes from unopened file");
+			if (sym->region.range.start.byte > file->last_symbol_byte) {
+				file->last_symbol_byte = sym->region.range.start.byte;
+			}
+
 			if (!sym->name_is_generated) {
 				buxn_ls_sym_node_t* sym_node = buxn_ls_make_sym_node(analyzer, sym);
 				sym_node->next = sym_node->source->definitions;
@@ -537,9 +601,6 @@ buxn_asm_put_symbol(buxn_asm_ctx_t* ctx, uint16_t addr, const buxn_asm_sym_t* sy
 						) {
 							sym_node->semantics = BUXN_LS_SYMBOL_AS_ENUM;
 						} else {
-							buxn_ls_file_t* file = buxn_ls_find_file(analyzer, sym->region.filename);
-							assert((file != NULL) && "Symbol comes from unopened file");
-
 							sym_node->semantics = file->zero_page_semantics;
 							ctx->enum_scope.len = 0;
 						}
@@ -624,7 +685,7 @@ buxn_asm_fopen(buxn_asm_ctx_t* ctx, const char* filename) {
 			.content = content,
 			.zero_page_semantics = BUXN_LS_SYMBOL_AS_VARIABLE,
 			.first_line_index = -1,
-			.first_error_byte = INT_MAX,  // No error
+			.has_error = false,
 		};
 		bhash_put(&analyzer->files, filename, file);
 	}

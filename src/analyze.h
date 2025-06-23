@@ -47,6 +47,7 @@ struct buxn_ls_sym_node_s {
 	buxn_ls_src_node_t* source;
 	buxn_asm_sym_type_t type;
 	buxn_ls_symbol_semantics_t semantics;
+	int byte_offset;
 	bio_lsp_range_t range;
 	uint16_t address;
 
@@ -79,7 +80,8 @@ typedef struct {
 
 	int first_line_index;
 	int num_lines;
-	int first_error_byte;
+	int last_symbol_byte;
+	bool has_error;
 } buxn_ls_file_t;
 
 typedef struct buxn_ls_analyzer_s {

@@ -53,6 +53,21 @@ buxn_ls_arena_strcpy(barena_t* arena, const char* str) {
 	return copy;
 }
 
+static inline buxn_ls_str_t
+buxn_ls_arena_cstrcpy(barena_t* arena, buxn_ls_str_t str) {
+	if (str.len > 0) {
+		char* copy = barena_memalign(arena, str.len + 1, _Alignof(char));
+		memcpy(copy, str.chars, str.len);
+		copy[str.len] = '\0';
+		return (buxn_ls_str_t){
+			.chars = copy,
+			.len = str.len,
+		};
+	} else {
+		return (buxn_ls_str_t){ 0 };
+	}
+}
+
 static inline bhash_hash_t
 buxn_ls_str_hash(const void* key, size_t size) {
 	(void)size;
