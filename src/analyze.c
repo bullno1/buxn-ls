@@ -18,18 +18,14 @@ typedef enum {
 	BUXN_LS_ANNO_BUXN_ENUM,
 } buxn_ls_anno_type_t;
 
-struct buxn_anno_ctx_s {
-	buxn_anno_spec_t spec;
-};
-
 struct buxn_asm_ctx_s {
 	buxn_ls_src_node_t* entry_node;
 	buxn_ls_analyzer_t* analyzer;
 	buxn_ls_workspace_t* workspace;
 	buxn_asm_sym_t previous_sym;
 	buxn_ls_str_t enum_scope;
+	buxn_anno_spec_t anno_spec;
 	buxn_ls_sym_node_t* current_sym_node;
-	buxn_anno_ctx_t anno_ctx;
 };
 
 static int
@@ -252,12 +248,49 @@ buxn_ls_find_file(buxn_ls_analyzer_t* analyzer, const char* filename) {
 static buxn_ls_str_t
 buxn_ls_slice_file(buxn_ls_analyzer_t* analyzer, const buxn_asm_source_region_t* region) {
 	buxn_ls_file_t* file = buxn_ls_find_file(analyzer, region->filename);
-	assert((file != NULL) && "Invalid file");
+	if (file == NULL) {
+		return (buxn_ls_str_t){ 0 };
+	} else {
+		return (buxn_ls_str_t){
+			.chars = file->content.chars + region->range.start.byte,
+				.len = region->range.end.byte - region->range.start.byte,
+		};
+	}
+}
 
-	return (buxn_ls_str_t){
-		.chars = file->content.chars + region->range.start.byte,
-		.len = region->range.end.byte - region->range.start.byte,
-	};
+static void
+buxn_ls_handle_annotation(
+	void* anno_ctx,
+	uint16_t addr,
+	const buxn_asm_sym_t* sym,
+	const buxn_anno_t* annotation,
+	const buxn_asm_source_region_t* region
+) {
+	buxn_asm_ctx_t* ctx = anno_ctx;
+
+	if (annotation != NULL) {
+		buxn_ls_file_t* file = buxn_ls_find_file(ctx->analyzer, region->filename);
+		assert((file != NULL) && "Annotation comes from unopened file");
+
+		switch ((buxn_ls_anno_type_t)(annotation - ctx->anno_spec.annotations)) {
+			case BUXN_LS_ANNO_DOC:
+				ctx->current_sym_node->documentation = buxn_ls_slice_file(ctx->analyzer, region);
+				break;
+			case BUXN_LS_ANNO_BUXN_DEVICE:
+				file->zero_page_semantics = BUXN_LS_SYMBOL_AS_DEVICE_PORT;
+				break;
+			case BUXN_LS_ANNO_BUXN_MEMORY:
+				file->zero_page_semantics = BUXN_LS_SYMBOL_AS_VARIABLE;
+				break;
+			case BUXN_LS_ANNO_BUXN_ENUM:
+				ctx->current_sym_node->semantics = BUXN_LS_SYMBOL_AS_ENUM;
+				ctx->enum_scope = buxn_ls_label_scope(ctx->current_sym_node->name);
+				break;
+		}
+	} else {
+		ctx->current_sym_node->semantics = BUXN_LS_SYMBOL_AS_SUBROUTINE;
+		ctx->current_sym_node->signature = buxn_ls_slice_file(ctx->analyzer, region);
+	}
 }
 
 static void
@@ -378,14 +411,13 @@ buxn_ls_analyze(buxn_ls_analyzer_t* analyzer, buxn_ls_workspace_t* workspace) {
 				.entry_node = node,
 				.analyzer = analyzer,
 				.workspace = workspace,
-				.anno_ctx = {
-					.spec = {
-						.annotations = annotations,
-						.num_annotations = BCOUNT_OF(annotations),
-					},
+				.anno_spec = {
+					.annotations = annotations,
+					.num_annotations = BCOUNT_OF(annotations),
+					.ctx = &ctx,
+					.handler = buxn_ls_handle_annotation,
 				},
 			};
-			ctx.anno_ctx.spec.ctx = &ctx.anno_ctx;
 			buxn_asm(&ctx, node->filename);
 
 			// Bring forward old symbols in files with error to have some degree
@@ -624,7 +656,7 @@ buxn_asm_put_symbol(buxn_asm_ctx_t* ctx, uint16_t addr, const buxn_asm_sym_t* sy
 	}
 	ctx->previous_sym = *sym;
 
-	buxn_anno_handle_symbol(&ctx->anno_ctx.spec, sym);
+	buxn_anno_handle_symbol(&ctx->anno_spec, addr, sym);
 }
 
 buxn_asm_file_t*
@@ -728,43 +760,4 @@ buxn_asm_fgetc(buxn_asm_ctx_t* ctx, buxn_asm_file_t* file) {
 	} else {
 		return EOF;
 	}
-}
-
-void
-buxn_anno_handle_custom(
-	buxn_anno_ctx_t* anno_ctx,
-	const buxn_anno_t* annotation,
-	const buxn_asm_sym_t* sym,
-	const buxn_asm_source_region_t* region
-) {
-	buxn_asm_ctx_t* ctx = BCONTAINER_OF(anno_ctx, buxn_asm_ctx_t, anno_ctx);
-	buxn_ls_file_t* file = buxn_ls_find_file(ctx->analyzer, region->filename);
-	assert((file != NULL) && "Annotation comes from unopened file");
-
-	switch ((buxn_ls_anno_type_t)(annotation - anno_ctx->spec.annotations)) {
-		case BUXN_LS_ANNO_DOC:
-			ctx->current_sym_node->documentation = buxn_ls_slice_file(ctx->analyzer, region);
-			break;
-		case BUXN_LS_ANNO_BUXN_DEVICE:
-			file->zero_page_semantics = BUXN_LS_SYMBOL_AS_DEVICE_PORT;
-			break;
-		case BUXN_LS_ANNO_BUXN_MEMORY:
-			file->zero_page_semantics = BUXN_LS_SYMBOL_AS_VARIABLE;
-			break;
-		case BUXN_LS_ANNO_BUXN_ENUM:
-			ctx->current_sym_node->semantics = BUXN_LS_SYMBOL_AS_ENUM;
-			ctx->enum_scope = buxn_ls_label_scope(ctx->current_sym_node->name);
-			break;
-	}
-}
-
-void
-buxn_anno_handle_type(
-	buxn_anno_ctx_t* anno_ctx,
-	const buxn_asm_sym_t* sym,
-	const buxn_asm_source_region_t* region
-) {
-	buxn_asm_ctx_t* ctx = BCONTAINER_OF(anno_ctx, buxn_asm_ctx_t, anno_ctx);
-	ctx->current_sym_node->semantics = BUXN_LS_SYMBOL_AS_SUBROUTINE;
-	ctx->current_sym_node->signature = buxn_ls_slice_file(ctx->analyzer, region);
 }
