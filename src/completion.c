@@ -244,6 +244,7 @@ buxn_ls_completer_init(buxn_ls_completer_t* completer) {
 	bhash_config_t config = bhash_config_default();
 	config.eq = buxn_ls_cstr_eq;
 	config.hash = buxn_ls_cstr_hash;
+	config.removable = false;
 	bhash_init(&completer->completion_map, config);
 }
 

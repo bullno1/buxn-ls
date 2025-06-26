@@ -300,6 +300,7 @@ buxn_ls_init_analyzer_ctx(buxn_ls_analyzer_ctx_t* ctx, barena_pool_t* pool) {
 	bhash_config_t hash_config = bhash_config_default();
 	hash_config.eq = buxn_ls_str_eq;
 	hash_config.hash = buxn_ls_str_hash;
+	hash_config.removable = false;
 	bhash_init(&ctx->sources, hash_config);
 }
 
@@ -323,6 +324,7 @@ buxn_ls_analyzer_init(buxn_ls_analyzer_t* analyzer, barena_pool_t* pool) {
 	analyzer->previous_ctx = &analyzer->ctx_b;
 
 	bhash_config_t hash_config = bhash_config_default();
+	hash_config.removable = false;
 	bhash_init(&analyzer->label_defs, hash_config);
 
 	hash_config.eq = buxn_ls_str_eq;
