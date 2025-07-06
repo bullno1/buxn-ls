@@ -5,6 +5,6 @@
 inotifywait -r -e CLOSE_WRITE -m src | \
     while read path action file
 	do
-		printf '%*s\n' "$(tput cols)" '' | tr ' ' -
+		clear
 		./build || true
     done

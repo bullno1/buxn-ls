@@ -87,7 +87,7 @@ The language server that the editor interacts with is just a dumb proxy, which h
 
 However, with `--mode=shim`, the proxy would not be functional without a server running in the background.
 This is troublesome if one only wants to use `buxn-ls` for editting unxtal source files and not to develoop or debug it.
-`dev` mode is a hybrid of `stdio` and `shim`.
+`hybrid` mode is a hybrid of `stdio` and `shim`.
 It will opportunistically attempt to connect to the server.
 But if that fails, it will fallback to stdio and works as a standalone server.
 

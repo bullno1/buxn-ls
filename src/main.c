@@ -8,7 +8,7 @@ typedef enum {
 	BUXN_LS_STDIO,
 	BUXN_LS_SERVER,
 	BUXN_LS_SHIM,
-	BUXN_LS_DEV,
+	BUXN_LS_HYBRID,
 } launch_mode_t;
 
 extern int
@@ -29,8 +29,8 @@ parse_mode(void* userdata, const char* str) {
 	} else if (strcmp(str, "shim") == 0) {
 		*mode = BUXN_LS_SHIM;
 		return NULL;
-	} else if (strcmp(str, "dev") == 0) {
-		*mode = BUXN_LS_DEV;
+	} else if (strcmp(str, "hybrid") == 0) {
+		*mode = BUXN_LS_HYBRID;
 		return NULL;
 	} else {
 		return "Invalid mode";
@@ -56,7 +56,7 @@ main(int argc, const char* argv[]) {
 				"* stdio: Communicate through stdin and stdout\n"
 				"* server: Listens for incoming connection\n"
 				"* shim: Connect to a server and forward stdio to that server\n"
-				"* dev: Same as shim but fallback to stdio if the connection failed\n",
+				"* hybrid: Same as shim but fallback to stdio if the connection failed\n",
 		},
 		{
 			.name = "socket",
@@ -89,7 +89,7 @@ main(int argc, const char* argv[]) {
 			return buxn_ls_server(socket_path);
 		case BUXN_LS_SHIM:
 			return buxn_ls_shim(socket_path, false);
-		case BUXN_LS_DEV:
+		case BUXN_LS_HYBRID:
 			return buxn_ls_shim(socket_path, true);
 	}
 }
