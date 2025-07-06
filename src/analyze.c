@@ -5,6 +5,7 @@
 #include <bmacro.h>
 #include <buxn/asm/asm.h>
 #include <buxn/asm/annotation.h>
+#include <buxn/asm/chess.h>
 #include <bio/file.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -26,6 +27,9 @@ struct buxn_asm_ctx_s {
 	buxn_ls_str_t enum_scope;
 	buxn_anno_spec_t anno_spec;
 	buxn_ls_sym_node_t* current_sym_node;
+	buxn_chess_t* chess;
+	barena_t chess_arena;
+	uint8_t rom[UINT16_MAX + 1 - 256];
 };
 
 static int
@@ -294,6 +298,53 @@ buxn_ls_handle_annotation(
 }
 
 static void
+buxn_ls_report(
+	buxn_asm_ctx_t* ctx,
+	const char* source,
+	buxn_asm_report_type_t type,
+	const buxn_asm_report_t* report
+) {
+	buxn_ls_analyzer_t* analyzer = ctx->analyzer;
+
+	// Only save reports about source regions, not top level reports
+	if (report->region->range.start.line == 0) { return; }
+
+	if (type == BUXN_ASM_REPORT_ERROR) {
+		bhash_index_t file_index = bhash_find(&analyzer->files, report->region->filename);
+		if (bhash_is_valid(file_index)) {
+			buxn_ls_file_t* file = &analyzer->files.values[file_index];
+			file->has_error = true;
+		}
+	}
+
+	buxn_ls_diagnostic_t diag = {
+		.location = buxn_ls_convert_region(ctx->analyzer, *report->region),
+		.message = buxn_ls_arena_strcpy(&ctx->analyzer->current_ctx->arena, report->message),
+		.source = source,
+	};
+	switch (type) {
+		case BUXN_ASM_REPORT_WARNING:
+			diag.severity = BIO_LSP_DIAGNOSTIC_WARNING;
+			break;
+		case BUXN_ASM_REPORT_ERROR:
+			diag.severity = BIO_LSP_DIAGNOSTIC_ERROR;
+			break;
+		default:
+			diag.severity = BIO_LSP_DIAGNOSTIC_INFORMATION;
+			break;
+	}
+	if (
+		report->related_message != NULL
+		&& report->related_region->filename == report->region->filename
+	) {
+		diag.related_location = buxn_ls_convert_region(ctx->analyzer, *report->region);
+		diag.related_message = buxn_ls_arena_strcpy(&ctx->analyzer->current_ctx->arena, report->related_message);
+	}
+
+	barray_push(analyzer->diagnostics, diag, NULL);
+}
+
+static void
 buxn_ls_init_analyzer_ctx(buxn_ls_analyzer_ctx_t* ctx, barena_pool_t* pool) {
 	barena_init(&ctx->arena, pool);
 
@@ -318,6 +369,7 @@ buxn_ls_cleanup_analyzer_ctx(buxn_ls_analyzer_ctx_t* ctx) {
 
 void
 buxn_ls_analyzer_init(buxn_ls_analyzer_t* analyzer, barena_pool_t* pool) {
+	analyzer->arena_pool = pool;
 	buxn_ls_init_analyzer_ctx(&analyzer->ctx_a, pool);
 	buxn_ls_init_analyzer_ctx(&analyzer->ctx_b, pool);
 	analyzer->current_ctx = &analyzer->ctx_a;
@@ -420,7 +472,13 @@ buxn_ls_analyze(buxn_ls_analyzer_t* analyzer, buxn_ls_workspace_t* workspace) {
 					.handler = buxn_ls_handle_annotation,
 				},
 			};
-			buxn_asm(&ctx, node->filename);
+			barena_init(&ctx.chess_arena, analyzer->arena_pool);
+			ctx.chess = buxn_chess_begin(&ctx);
+			bool success = buxn_asm(&ctx, node->filename);
+			if (success) {
+				buxn_chess_end(ctx.chess);
+			}
+			barena_reset(&ctx.chess_arena);
 
 			// Bring forward old symbols in files with error to have some degree
 			// of error tolerance
@@ -548,55 +606,18 @@ buxn_asm_alloc(buxn_asm_ctx_t* ctx, size_t size, size_t alignment) {
 
 void
 buxn_asm_report(buxn_asm_ctx_t* ctx, buxn_asm_report_type_t type, const buxn_asm_report_t* report) {
-	buxn_ls_analyzer_t* analyzer = ctx->analyzer;
-
-	// Only save reports about source regions, not top level reports
-	if (report->region->range.start.line == 0) { return; }
-
-	if (type == BUXN_ASM_REPORT_ERROR) {
-		bhash_index_t file_index = bhash_find(&analyzer->files, report->region->filename);
-		if (bhash_is_valid(file_index)) {
-			buxn_ls_file_t* file = &analyzer->files.values[file_index];
-			file->has_error = true;
-		}
-	}
-
-	buxn_ls_diagnostic_t diag = {
-		.location = buxn_ls_convert_region(ctx->analyzer, *report->region),
-		.message = report->message,
-		.source = "buxn-asm",
-	};
-	switch (type) {
-		case BUXN_ASM_REPORT_WARNING:
-			diag.severity = BIO_LSP_DIAGNOSTIC_WARNING;
-			break;
-		case BUXN_ASM_REPORT_ERROR:
-			diag.severity = BIO_LSP_DIAGNOSTIC_ERROR;
-			break;
-		default:
-			diag.severity = BIO_LSP_DIAGNOSTIC_INFORMATION;
-			break;
-	}
-	if (
-		report->related_message != NULL
-		&& report->related_region->filename == report->region->filename
-	) {
-		diag.related_location = buxn_ls_convert_region(ctx->analyzer, *report->region);
-		diag.related_message = report->related_message;
-	}
-
-	barray_push(analyzer->diagnostics, diag, NULL);
+	buxn_ls_report(ctx, "buxn-asm", type, report);
 }
 
 void
 buxn_asm_put_rom(buxn_asm_ctx_t* ctx, uint16_t addr, uint8_t value) {
-	(void)ctx;
-	(void)addr;
-	(void)value;
+	ctx->rom[addr - 256] = value;
 }
 
 void
 buxn_asm_put_symbol(buxn_asm_ctx_t* ctx, uint16_t addr, const buxn_asm_sym_t* sym) {
+	buxn_chess_handle_symbol(ctx->chess, addr, sym);
+
 	// When an address reference is 16 bit, there will be two identical symbols
 	// emitted for both bytes.
 	// We should only consider the first symbol.
@@ -762,4 +783,43 @@ buxn_asm_fgetc(buxn_asm_ctx_t* ctx, buxn_asm_file_t* file) {
 	} else {
 		return EOF;
 	}
+}
+
+void*
+buxn_chess_alloc(buxn_asm_ctx_t* ctx, size_t size, size_t alignment) {
+	return barena_memalign(&ctx->chess_arena, size, alignment);
+}
+
+void*
+buxn_chess_begin_mem_region(buxn_asm_ctx_t* ctx) {
+	return (void*)barena_snapshot(&ctx->chess_arena);
+}
+
+void
+buxn_chess_end_mem_region(buxn_asm_ctx_t* ctx, void* region) {
+	barena_restore(&ctx->chess_arena, (barena_snapshot_t)region);
+}
+
+uint8_t
+buxn_chess_get_rom(buxn_asm_ctx_t* ctx, uint16_t address) {
+	return ctx->rom[address - 256];
+}
+
+void
+buxn_chess_report(buxn_asm_ctx_t* ctx, buxn_asm_report_type_t type, const buxn_asm_report_t* report) {
+	buxn_ls_report(ctx, "buxn-chess", type, report);
+}
+
+void
+buxn_chess_report_info(buxn_asm_ctx_t* ctx, const buxn_asm_report_t* report) {
+	(void)ctx;
+	(void)report;
+}
+
+void
+buxn_chess_debug(const char* filename, int line, const char* fmt, ...) {
+	va_list args;
+	va_start(args, fmt);
+	bio_vlog(BIO_LOG_LEVEL_TRACE, filename, line, fmt, args);
+	va_end(args);
 }

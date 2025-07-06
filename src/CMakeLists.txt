@@ -25,6 +25,7 @@ target_link_libraries(
 	libyuarel
 	buxn-asm
 	buxn-asm-annotation
+	buxn-asm-chess
 	utf8proc
 )
 

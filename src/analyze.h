@@ -98,6 +98,8 @@ typedef struct buxn_ls_analyzer_s {
 	barray(buxn_ls_sym_node_t*) macro_defs;
 	BHASH_TABLE(uint16_t, buxn_ls_sym_node_t*) label_defs;
 	barray(buxn_asm_sym_t) references;
+
+	barena_pool_t* arena_pool;
 } buxn_ls_analyzer_t;
 
 void

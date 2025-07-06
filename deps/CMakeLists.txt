@@ -8,6 +8,9 @@ target_link_libraries(buxn-asm PUBLIC buxn)
 add_library(buxn-asm-annotation STATIC "buxn/src/asm/annotation.c")
 target_link_libraries(buxn-asm-annotation PUBLIC buxn)
 
+add_library(buxn-asm-chess STATIC "buxn/src/asm/chess.c")
+target_link_libraries(buxn-asm-chess PUBLIC buxn blibs)
+
 # bio
 include(bio/deps/CMakeLists.txt)
 set(BUILD_DEPS OFF CACHE BOOL "bio should not build deps")
