@@ -29,6 +29,7 @@ struct buxn_asm_ctx_s {
 	buxn_ls_sym_node_t* current_sym_node;
 	buxn_chess_t* chess;
 	barena_t chess_arena;
+	bool rom_is_empty;
 	uint8_t rom[UINT16_MAX + 1 - 256];
 };
 
@@ -475,7 +476,7 @@ buxn_ls_analyze(buxn_ls_analyzer_t* analyzer, buxn_ls_workspace_t* workspace) {
 			barena_init(&ctx.chess_arena, analyzer->arena_pool);
 			ctx.chess = buxn_chess_begin(&ctx);
 			bool success = buxn_asm(&ctx, node->filename);
-			if (success) {
+			if (success && !ctx.rom_is_empty) {
 				buxn_chess_end(ctx.chess);
 			}
 			barena_reset(&ctx.chess_arena);
@@ -612,6 +613,7 @@ buxn_asm_report(buxn_asm_ctx_t* ctx, buxn_asm_report_type_t type, const buxn_asm
 void
 buxn_asm_put_rom(buxn_asm_ctx_t* ctx, uint16_t addr, uint8_t value) {
 	ctx->rom[addr - 256] = value;
+	ctx->rom_is_empty = false;
 }
 
 void
