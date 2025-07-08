@@ -299,53 +299,6 @@ buxn_ls_handle_annotation(
 }
 
 static void
-buxn_ls_report(
-	buxn_asm_ctx_t* ctx,
-	const char* source,
-	buxn_asm_report_type_t type,
-	const buxn_asm_report_t* report
-) {
-	buxn_ls_analyzer_t* analyzer = ctx->analyzer;
-
-	// Only save reports about source regions, not top level reports
-	if (report->region->range.start.line == 0) { return; }
-
-	if (type == BUXN_ASM_REPORT_ERROR) {
-		bhash_index_t file_index = bhash_find(&analyzer->files, report->region->filename);
-		if (bhash_is_valid(file_index)) {
-			buxn_ls_file_t* file = &analyzer->files.values[file_index];
-			file->has_error = true;
-		}
-	}
-
-	buxn_ls_diagnostic_t diag = {
-		.location = buxn_ls_convert_region(ctx->analyzer, *report->region),
-		.message = buxn_ls_arena_strcpy(&ctx->analyzer->current_ctx->arena, report->message),
-		.source = source,
-	};
-	switch (type) {
-		case BUXN_ASM_REPORT_WARNING:
-			diag.severity = BIO_LSP_DIAGNOSTIC_WARNING;
-			break;
-		case BUXN_ASM_REPORT_ERROR:
-			diag.severity = BIO_LSP_DIAGNOSTIC_ERROR;
-			break;
-		default:
-			diag.severity = BIO_LSP_DIAGNOSTIC_INFORMATION;
-			break;
-	}
-	if (
-		report->related_message != NULL
-		&& report->related_region->filename == report->region->filename
-	) {
-		diag.related_location = buxn_ls_convert_region(ctx->analyzer, *report->region);
-		diag.related_message = buxn_ls_arena_strcpy(&ctx->analyzer->current_ctx->arena, report->related_message);
-	}
-
-	barray_push(analyzer->diagnostics, diag, NULL);
-}
-
-static void
 buxn_ls_init_analyzer_ctx(buxn_ls_analyzer_ctx_t* ctx, barena_pool_t* pool) {
 	barena_init(&ctx->arena, pool);
 
@@ -607,7 +560,44 @@ buxn_asm_alloc(buxn_asm_ctx_t* ctx, size_t size, size_t alignment) {
 
 void
 buxn_asm_report(buxn_asm_ctx_t* ctx, buxn_asm_report_type_t type, const buxn_asm_report_t* report) {
-	buxn_ls_report(ctx, "buxn-asm", type, report);
+	buxn_ls_analyzer_t* analyzer = ctx->analyzer;
+
+	// Only save reports about source regions, not top level reports
+	if (report->region->range.start.line == 0) { return; }
+
+	if (type == BUXN_ASM_REPORT_ERROR) {
+		bhash_index_t file_index = bhash_find(&analyzer->files, report->region->filename);
+		if (bhash_is_valid(file_index)) {
+			buxn_ls_file_t* file = &analyzer->files.values[file_index];
+			file->has_error = true;
+		}
+	}
+
+	buxn_ls_diagnostic_t diag = {
+		.location = buxn_ls_convert_region(ctx->analyzer, *report->region),
+		.message = buxn_ls_arena_strcpy(&ctx->analyzer->current_ctx->arena, report->message),
+		.source = "buxn-asm",
+	};
+	switch (type) {
+		case BUXN_ASM_REPORT_WARNING:
+			diag.severity = BIO_LSP_DIAGNOSTIC_WARNING;
+			break;
+		case BUXN_ASM_REPORT_ERROR:
+			diag.severity = BIO_LSP_DIAGNOSTIC_ERROR;
+			break;
+		default:
+			diag.severity = BIO_LSP_DIAGNOSTIC_INFORMATION;
+			break;
+	}
+	if (
+		report->related_message != NULL
+		&& report->related_region->filename == report->region->filename
+	) {
+		diag.related_location = buxn_ls_convert_region(ctx->analyzer, *report->region);
+		diag.related_message = buxn_ls_arena_strcpy(&ctx->analyzer->current_ctx->arena, report->related_message);
+	}
+
+	barray_push(analyzer->diagnostics, diag, NULL);
 }
 
 void
@@ -808,20 +798,112 @@ buxn_chess_get_rom(buxn_asm_ctx_t* ctx, uint16_t address) {
 }
 
 void
-buxn_chess_report(buxn_asm_ctx_t* ctx, buxn_asm_report_type_t type, const buxn_asm_report_t* report) {
-	buxn_ls_report(ctx, "buxn-chess", type, report);
+buxn_chess_report(
+	buxn_asm_ctx_t* ctx,
+	buxn_chess_id_t trace_id,
+	buxn_asm_report_type_t type,
+	const buxn_asm_report_t* report
+) {
+	buxn_ls_analyzer_t* analyzer = ctx->analyzer;
+
+	// Only save reports about source regions, not top level reports
+	if (report->region->range.start.line == 0) { return; }
+
+	if (type == BUXN_ASM_REPORT_ERROR) {
+		bhash_index_t file_index = bhash_find(&analyzer->files, report->region->filename);
+		if (bhash_is_valid(file_index)) {
+			buxn_ls_file_t* file = &analyzer->files.values[file_index];
+			file->has_error = true;
+		}
+	}
+
+	buxn_ls_diagnostic_t diag;
+	if (trace_id != BUXN_CHESS_NO_TRACE) {
+		diag = (buxn_ls_diagnostic_t){
+			.location = buxn_ls_convert_region(ctx->analyzer, *report->region),
+			.message = buxn_ls_arena_fmt(
+				&ctx->analyzer->current_ctx->arena,
+				"[%d] %s", trace_id, report->message
+			).chars,
+			.source = "buxn-chess",
+		};
+	} else {
+		diag = (buxn_ls_diagnostic_t){
+			.location = buxn_ls_convert_region(ctx->analyzer, *report->region),
+			.message = buxn_ls_arena_strcpy(
+				&ctx->analyzer->current_ctx->arena,
+				report->message
+			),
+			.source = "buxn-chess",
+		};
+	}
+
+	switch (type) {
+		case BUXN_ASM_REPORT_WARNING:
+			diag.severity = BIO_LSP_DIAGNOSTIC_WARNING;
+			break;
+		case BUXN_ASM_REPORT_ERROR:
+			diag.severity = BIO_LSP_DIAGNOSTIC_ERROR;
+			break;
+		default:
+			diag.severity = BIO_LSP_DIAGNOSTIC_INFORMATION;
+			break;
+	}
+	if (
+		report->related_message != NULL
+		&& report->related_region->filename == report->region->filename
+	) {
+		diag.related_location = buxn_ls_convert_region(ctx->analyzer, *report->region);
+		diag.related_message = buxn_ls_arena_strcpy(&ctx->analyzer->current_ctx->arena, report->related_message);
+	}
+
+	barray_push(analyzer->diagnostics, diag, NULL);
 }
 
 void
-buxn_chess_report_info(buxn_asm_ctx_t* ctx, const buxn_asm_report_t* report) {
+buxn_chess_report_info(
+	buxn_asm_ctx_t* ctx,
+	buxn_chess_id_t trace_id,
+	const buxn_asm_report_t* report
+) {
 	(void)ctx;
+	(void)trace_id;
 	(void)report;
 }
 
 void
-buxn_chess_debug(const char* filename, int line, const char* fmt, ...) {
-	va_list args;
-	va_start(args, fmt);
-	bio_vlog(BIO_LOG_LEVEL_TRACE, filename, line, fmt, args);
-	va_end(args);
+buxn_chess_begin_trace(
+	buxn_asm_ctx_t* ctx,
+	buxn_chess_id_t trace_id,
+	buxn_chess_id_t parent_id
+) {
+	(void)ctx;
+	(void)trace_id;
+	(void)parent_id;
+}
+
+extern void
+buxn_chess_end_trace(
+	buxn_asm_ctx_t* ctx,
+	buxn_chess_id_t trace_id,
+	bool success
+) {
+	(void)ctx;
+	(void)trace_id;
+	(void)success;
+}
+
+void
+buxn_chess_trace(
+	buxn_asm_ctx_t* ctx,
+	buxn_chess_id_t trace_id,
+	const char* filename,
+	int line,
+	const char* fmt, ...
+) {
+	(void)ctx;
+	(void)trace_id;
+	(void)filename;
+	(void)line;
+	(void)fmt;
 }
