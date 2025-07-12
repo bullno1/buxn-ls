@@ -801,7 +801,7 @@ void
 buxn_chess_report(
 	buxn_asm_ctx_t* ctx,
 	buxn_chess_id_t trace_id,
-	buxn_asm_report_type_t type,
+	buxn_chess_report_type_t type,
 	const buxn_asm_report_t* report
 ) {
 	buxn_ls_analyzer_t* analyzer = ctx->analyzer;
@@ -809,7 +809,20 @@ buxn_chess_report(
 	// Only save reports about source regions, not top level reports
 	if (report->region->range.start.line == 0) { return; }
 
-	if (type == BUXN_ASM_REPORT_ERROR) {
+	buxn_ls_diagnostic_t diag = { 0 };
+
+	switch (type) {
+		case BUXN_CHESS_REPORT_WARNING:
+			diag.severity = BIO_LSP_DIAGNOSTIC_WARNING;
+			break;
+		case BUXN_CHESS_REPORT_ERROR:
+			diag.severity = BIO_LSP_DIAGNOSTIC_ERROR;
+			break;
+		default:
+			return;
+	}
+
+	if (type == BUXN_CHESS_REPORT_ERROR) {
 		bhash_index_t file_index = bhash_find(&analyzer->files, report->region->filename);
 		if (bhash_is_valid(file_index)) {
 			buxn_ls_file_t* file = &analyzer->files.values[file_index];
@@ -817,7 +830,6 @@ buxn_chess_report(
 		}
 	}
 
-	buxn_ls_diagnostic_t diag;
 	if (trace_id != BUXN_CHESS_NO_TRACE) {
 		diag = (buxn_ls_diagnostic_t){
 			.location = buxn_ls_convert_region(ctx->analyzer, *report->region),
@@ -838,17 +850,6 @@ buxn_chess_report(
 		};
 	}
 
-	switch (type) {
-		case BUXN_ASM_REPORT_WARNING:
-			diag.severity = BIO_LSP_DIAGNOSTIC_WARNING;
-			break;
-		case BUXN_ASM_REPORT_ERROR:
-			diag.severity = BIO_LSP_DIAGNOSTIC_ERROR;
-			break;
-		default:
-			diag.severity = BIO_LSP_DIAGNOSTIC_INFORMATION;
-			break;
-	}
 	if (
 		report->related_message != NULL
 		&& report->related_region->filename == report->region->filename
@@ -861,14 +862,39 @@ buxn_chess_report(
 }
 
 void
-buxn_chess_report_info(
+buxn_chess_deo(
 	buxn_asm_ctx_t* ctx,
 	buxn_chess_id_t trace_id,
-	const buxn_asm_report_t* report
+	const buxn_chess_vm_state_t* state,
+	uint8_t value,
+	uint8_t port
 ) {
-	(void)ctx;
-	(void)trace_id;
-	(void)report;
+	if (port == 0x0e && value == 0x2b) {
+		void* mem_region = buxn_chess_begin_mem_region(ctx);
+
+		buxn_chess_str_t wst_str = buxn_chess_format_stack(
+			ctx->chess, state->wst.content, state->wst.len
+		);
+		buxn_chess_str_t rst_str = buxn_chess_format_stack(
+			ctx->chess, state->rst.content, state->rst.len
+		);
+
+		buxn_ls_diagnostic_t diag = {
+			.severity = BIO_LSP_DIAGNOSTIC_INFORMATION,
+			.location = buxn_ls_convert_region(ctx->analyzer, state->src_region),
+			.message = buxn_ls_arena_fmt(
+				&ctx->analyzer->current_ctx->arena,
+				"[%d] Stack:\nWST(%d):%.*s\nRST(%d):%.*s",
+				trace_id,
+				state->wst.size, wst_str.len, wst_str.chars,
+				state->rst.size, rst_str.len, rst_str.chars
+			).chars,
+			.source = "buxn-chess",
+		};
+		barray_push(ctx->analyzer->diagnostics, diag, NULL);
+
+		buxn_chess_end_mem_region(ctx, mem_region);
+	}
 }
 
 void
@@ -891,19 +917,4 @@ buxn_chess_end_trace(
 	(void)ctx;
 	(void)trace_id;
 	(void)success;
-}
-
-void
-buxn_chess_trace(
-	buxn_asm_ctx_t* ctx,
-	buxn_chess_id_t trace_id,
-	const char* filename,
-	int line,
-	const char* fmt, ...
-) {
-	(void)ctx;
-	(void)trace_id;
-	(void)filename;
-	(void)line;
-	(void)fmt;
 }
