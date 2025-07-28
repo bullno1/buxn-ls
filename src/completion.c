@@ -239,6 +239,29 @@ buxn_ls_visit_symbols(
 	}
 }
 
+static void
+buxn_ls_visit_symbols_from_root(
+	const buxn_ls_sym_visit_ctx_t* ctx,
+	const buxn_ls_src_node_t* src_node
+) {
+	// An included file can refer to symbols from the includer so we climb to
+	// the top of the include chain before descending
+	if (src_node->base.in_edges != NULL) {
+		for (
+			buxn_ls_edge_t* edge = src_node->base.in_edges;
+			edge != NULL;
+			edge = edge->next_in
+		) {
+			buxn_ls_visit_symbols_from_root(
+				ctx,
+				BCONTAINER_OF(edge->from, buxn_ls_src_node_t, base)
+			);
+		}
+	} else {
+		buxn_ls_visit_symbols(ctx, src_node);
+	}
+}
+
 void
 buxn_ls_completer_init(buxn_ls_completer_t* completer) {
 	bhash_config_t config = bhash_config_default();
@@ -425,7 +448,7 @@ buxn_ls_build_completion_list(
 
 	// Collect candidates
 	bhash_clear(&completer->completion_map);
-	buxn_ls_visit_symbols(
+	buxn_ls_visit_symbols_from_root(
 		&(buxn_ls_sym_visit_ctx_t){
 			.filter = filter,
 			.current_scope = current_scope,
