@@ -120,6 +120,8 @@ buxn_ls_convert_region(
 	);
 	if (bhash_is_valid(src_node_index)) {
 		location.uri = analyzer->current_ctx->sources.values[src_node_index]->uri;
+	} else {
+		BIO_WARN("Could not resolve filename: %s", basm_region.filename);
 	}
 
 	return location;
