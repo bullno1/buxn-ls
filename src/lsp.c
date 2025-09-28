@@ -132,6 +132,8 @@ bio_lsp_parse_msg(
 	bio_lsp_in_msg_t* msg,
 	bio_error_t* error
 ) {
+	/*BIO_TRACE("< %.*s", (int)content_length, buf);*/
+
 	yyjson_read_err yyjson_err = { 0 };
 	yyjson_alc alc;
 	yyjson_alc_pool_init(
@@ -218,7 +220,7 @@ bio_lsp_send_msg(
 		NULL
 	);
 	bool success = false;
-	/*BIO_TRACE("%.*s", (int)content_length, body);*/
+	/*BIO_TRACE("> %.*s", (int)content_length, body);*/
 
 	char header[32];
 	int header_len = snprintf(header, sizeof(header), "Content-Length: %zu\r\n\r\n", content_length);

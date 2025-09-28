@@ -42,8 +42,11 @@ buxn_ls_cmp_diagnostic(const void* lhs, const void* rhs) {
 
 buxn_ls_line_slice_t
 buxn_ls_analyzer_split_file(buxn_ls_analyzer_t* analyzer, const char* filename) {
+	BIO_DEBUG("Splitting file %s", filename);
+
 	bhash_index_t file_index = bhash_find(&analyzer->files, filename);
 	if (!bhash_is_valid(file_index)) {  // Invalid file
+		BIO_WARN("Invalid file");
 		return (buxn_ls_line_slice_t){
 			.lines = NULL,
 			.num_lines = 0,
@@ -57,8 +60,6 @@ buxn_ls_analyzer_split_file(buxn_ls_analyzer_t* analyzer, const char* filename) 
 			.num_lines = file->num_lines,
 		};
 	}
-
-	BIO_DEBUG("Splitting file %s", filename);
 
 	buxn_ls_str_t content = analyzer->files.values[file_index].content;
 	file->first_line_index = (int)barray_len(analyzer->lines);
@@ -77,8 +78,8 @@ buxn_ls_convert_position(
 	buxn_ls_line_slice_t line_slice = buxn_ls_analyzer_split_file(analyzer, filename);
 	bio_lsp_position_t lsp_pos = { .line = basm_pos.line - 1 };
 
-	if (lsp_pos.line >= line_slice.num_lines) {
-		lsp_pos.line = line_slice.num_lines - 1;
+	if (lsp_pos.line >= line_slice.num_lines || line_slice.lines == NULL) {
+		lsp_pos.line = 0;
 		lsp_pos.character = 0;
 		return lsp_pos;
 	}
